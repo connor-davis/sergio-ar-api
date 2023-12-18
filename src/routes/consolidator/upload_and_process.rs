@@ -169,7 +169,11 @@ async fn consolidate_files(date: &str) -> Result<(), Error> {
 
     println!("❕ Consolidating files...");
 
-    
+    for (index, row) in first_sheet.rows().enumerate() {
+        let row = row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>();
+
+        println!("❕ Consolidating row {:?}", row);
+    }
 
     Ok(())
 }
