@@ -6,7 +6,10 @@ use axum::{
 };
 use serde_json::{json, Value};
 
-use crate::{routes::consolidator, AppState};
+use crate::{
+    routes::{consolidator, efficiency},
+    AppState,
+};
 
 pub async fn create_router(app_state: AppState) -> Router {
     Router::new()
@@ -14,6 +17,10 @@ pub async fn create_router(app_state: AppState) -> Router {
         .route(
             "/upload-and-process",
             post(consolidator::upload_and_process::upload_and_process),
+        )
+        .route(
+            "/generate-efficiency-report",
+            get(efficiency::generate_efficiency_report::generate_efficiency_report),
         )
         .fallback(fallback)
         .with_state(app_state)
