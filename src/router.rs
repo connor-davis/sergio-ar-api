@@ -29,7 +29,7 @@ pub async fn create_router(app_state: AppState) -> Router {
 async fn index() -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     Ok(Json(json!({
         "status": StatusCode::OK.as_u16(),
-        "message": "Welcome to Thusa Managed Accounts Executive Report API v2!",
+        "message": "Welcome to Core Capital Automatic Reports API!",
         "database": true
     })))
 }
