@@ -7,7 +7,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::{
-    routes::{consolidator, efficiency},
+    routes::{consolidator, data, efficiency},
     AppState,
 };
 
@@ -22,6 +22,8 @@ pub async fn create_router(app_state: AppState) -> Router {
             "/generate-efficiency-report",
             get(efficiency::generate_efficiency_report::generate_efficiency_report),
         )
+        .route("/shift-groups", get(data::shift_groups::get_shift_groups))
+        .route("/schedules", get(data::schedules::get_schedules))
         .fallback(fallback)
         .with_state(app_state)
 }

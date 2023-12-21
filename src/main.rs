@@ -79,6 +79,7 @@ Automatic Reports Consolidation API © 2023
 
             let cors = CorsLayer::new()
                 .allow_origin("http://localhost:3001".parse::<HeaderValue>()?)
+                .allow_origin("http://localhost:5173".parse::<HeaderValue>()?)
                 .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
                 .allow_credentials(true)
                 .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE]);
