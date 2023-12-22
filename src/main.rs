@@ -19,6 +19,7 @@ use crate::{config::Config, router::create_router};
 mod config;
 mod router;
 mod routes;
+mod utils;
 
 #[derive(Clone)]
 pub struct AppState {

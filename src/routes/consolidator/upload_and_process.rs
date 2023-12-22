@@ -16,7 +16,7 @@ use tokio::{
     io::AsyncWriteExt,
 };
 
-use crate::AppState;
+use crate::{utils::invoicing_parser::InvoicingParser, AppState};
 
 #[derive(Deserialize)]
 pub struct UploadAndProcessQuery {
@@ -213,8 +213,13 @@ async fn consolidate_files(
 
     println!("✅ Successfully opened all dialogue files.");
 
-    let invoicing_sheet = csv::Reader::from_path(invoicing_file_path)
-        .expect("Cannot open invoicing file.")
+    println!("❕ Attempting custom parser");
+
+    let parse_result = InvoicingParser::parse_invoicing_file(&invoicing_file_path).await?;
+
+    println!("✅ Successfully parsed invoicing file.");
+
+    let invoicing_sheet = csv::Reader::from_reader(parse_result.as_bytes())
         .into_records()
         .map(|record| record.unwrap_or(csv::StringRecord::new()))
         .filter(|record| record.len() > 0)
