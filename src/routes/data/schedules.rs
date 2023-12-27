@@ -32,8 +32,6 @@ pub async fn get_schedules(
     Query(params): Query<GetSchedulesParams>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    println!("params: {:?}", params);
-
     let start_date = NaiveDateTime::parse_from_str(&params.start_date, "%Y-%m-%d %H:%M:%S")
         .map_err(|e| {
             tracing::error!("Error parsing start_date: {:?}", e);
@@ -45,8 +43,6 @@ pub async fn get_schedules(
 
     match start_date {
         Ok(start_date) => {
-            println!("start_date: {:?}", start_date);
-
             let end_date = NaiveDateTime::parse_from_str(&params.end_date, "%Y-%m-%d %H:%M:%S")
                 .map_err(|e| {
                     tracing::error!("Error parsing end_date: {:?}", e);
