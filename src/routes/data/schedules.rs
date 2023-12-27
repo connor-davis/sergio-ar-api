@@ -12,8 +12,8 @@ use crate::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct GetSchedulesParams {
-    pub start_date: NaiveDateTime,
-    pub end_date: NaiveDateTime,
+    pub start_date: String,
+    pub end_date: String,
     pub shift_group: String,
 }
 
@@ -32,43 +32,75 @@ pub async fn get_schedules(
     Query(params): Query<GetSchedulesParams>,
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let schedules = sqlx::query_as!(
-        Schedule,
-        r#"
-        SELECT
-            schedules.id,
-            schedules.start_date,
-            schedules.end_date,
-            teachers.name AS teacher_name,
-            schedules.shift_group,
-            schedules.shift,
-            schedules.shift_type
-        FROM schedules
-        LEFT JOIN teachers ON schedules.teacher_id = teachers.id
-        WHERE schedules.shift_group = $1 AND schedules.start_date >= $2 AND schedules.start_date <= $3
-        "#,
-        params.shift_group,
-        params.start_date,
-        params.end_date
-    )
-    .fetch_all(&app_state.db)
-    .await
-    .map_err(|e| {
-        tracing::error!("Error fetching schedules: {:?}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({ "error": "Error fetching schedules" }),
-        )
-    });
+    println!("params: {:?}", params);
 
-    match schedules {
-        Ok(schedules) => Ok((
-            StatusCode::OK,
-            Json(json!({
-                "status": StatusCode::OK.as_u16(),
-                "schedules": schedules
-            })),
-        )),
+    let start_date = NaiveDateTime::parse_from_str(&params.start_date, "%Y-%m-%d %H:%M:%S")
+        .map_err(|e| {
+            tracing::error!("Error parsing start_date: {:?}", e);
+            (
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "Error parsing start_date" }),
+            )
+        });
+
+    match start_date {
+        Ok(start_date) => {
+            println!("start_date: {:?}", start_date);
+
+            let end_date = NaiveDateTime::parse_from_str(&params.end_date, "%Y-%m-%d %H:%M:%S")
+                .map_err(|e| {
+                    tracing::error!("Error parsing end_date: {:?}", e);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        json!({ "error": "Error parsing end_date" }),
+                    )
+                });
+
+            match end_date {
+                Ok(end_date) => {
+                    let schedules = sqlx::query_as!(
+                        Schedule,
+                        r#"
+                        SELECT
+                            schedules.id,
+                            schedules.start_date,
+                            schedules.end_date,
+                            teachers.name AS teacher_name,
+                            schedules.shift_group,
+                            schedules.shift,
+                            schedules.shift_type
+                        FROM schedules
+                        LEFT JOIN teachers ON schedules.teacher_id = teachers.id
+                        WHERE schedules.shift_group = $1 AND schedules.start_date >= $2 AND schedules.start_date <= $3
+                        "#,
+                        params.shift_group,
+                        start_date,
+                        end_date
+                    )
+                    .fetch_all(&app_state.db)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("Error fetching schedules: {:?}", e);
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            json!({ "error": "Error fetching schedules" }),
+                        )
+                    });
+
+                    match schedules {
+                        Ok(schedules) => Ok((
+                            StatusCode::OK,
+                            Json(json!({
+                                "status": StatusCode::OK.as_u16(),
+                                "schedules": schedules
+                            })),
+                        )),
+                        Err((status_code, json)) => Err((status_code, Json(json))),
+                    }
+                }
+                Err((status_code, json)) => Err((status_code, Json(json))),
+            }
+        }
         Err((status_code, json)) => Err((status_code, Json(json))),
     }
 }
