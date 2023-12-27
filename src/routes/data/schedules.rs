@@ -12,6 +12,8 @@ use crate::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct GetSchedulesParams {
+    pub start_date: NaiveDateTime,
+    pub end_date: NaiveDateTime,
     pub shift_group: String,
 }
 
@@ -43,9 +45,11 @@ pub async fn get_schedules(
             schedules.shift_type
         FROM schedules
         LEFT JOIN teachers ON schedules.teacher_id = teachers.id
-        WHERE schedules.shift_group = $1
+        WHERE schedules.shift_group = $1 AND schedules.start_date >= $2 AND schedules.start_date <= $3
         "#,
-        params.shift_group
+        params.shift_group,
+        params.start_date,
+        params.end_date
     )
     .fetch_all(&app_state.db)
     .await
