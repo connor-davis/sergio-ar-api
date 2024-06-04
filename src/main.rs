@@ -91,7 +91,7 @@ Automatic Reports Consolidation API © 2023
                 .layer(cors)
                 .layer(ServiceBuilder::new().layer(TraceLayer::new_for_http()));
 
-            let address = SocketAddr::from(([0, 0, 0, 0], 3000));
+            let address = SocketAddr::from(([0, 0, 0, 0], 4000));
 
             let listener = TcpListener::bind(&address).await?;
 
