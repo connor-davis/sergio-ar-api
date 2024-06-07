@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, io::Write};
 
 use anyhow::Error;
 use axum::{
@@ -128,22 +128,22 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
     match directory_exists {
         Ok(directory) => {
             if !directory {
-                println!("directory not found. creating");
+                println!("❕ Directory not found. Creating.");
 
                 let create_dir_result = create_dir(&directory_path).await;
 
                 match create_dir_result {
                     Ok(_) => {
-                        println!("directory created");
+                        println!("✅ Directory created.");
                     }
                     Err(_) => {
-                        println!("failed to create directory");
+                        println!("🔥 Failed to create directory.");
                     }
                 }
             }
         }
         Err(_) => {
-            println!("unknown error when checking directory exists")
+            println!("🔥 Unknown error when checking directory exists.")
         }
     }
 
@@ -151,23 +151,26 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
         let name = field.name().unwrap().to_string();
         let data = field.bytes().await.unwrap();
 
-        let file_result = File::create(format!("{}/{}", &directory_path, &name)).await;
+        let file_path = format!("{}/{}", &directory_path, &name);
+        let file_exists = try_exists(&file_path).await?;
 
-        match file_result {
-            Ok(mut file) => {
-                let write_result = file.write_all(&data).await;
+        let mut file = if file_exists {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&file_path)?
+        } else {
+            std::fs::File::create(&file_path)?
+        };
 
-                match write_result {
-                    Ok(_) => {
-                        println!("✅ File data written to temporary file: {}", &name);
-                    }
-                    Err(_) => {
-                        println!("🔥 Failed to write file data to temporary file.");
-                    }
-                }
+        let write_result = file.write_all(&data);
+
+        match write_result {
+            Ok(_) => {
+                println!("✅ File data written to temporary file: {}", &name);
             }
             Err(_) => {
-                println!("🔥 Failed to upload and temporarily store file.");
+                println!("🔥 Failed to write file data to temporary file.");
             }
         }
     }
@@ -551,7 +554,10 @@ async fn consolidate_files(
 
     println!("✅ Successfully mapped invoicing file.");
 
-    println!("❕ Storing invoice rows to the database.");
+    println!(
+        "❕ Storing invoice {:?} rows to the database.",
+        invoicing_rows.len()
+    );
 
     let mut inserted_invoices = 0;
     let mut skipped_invoices = 0;
