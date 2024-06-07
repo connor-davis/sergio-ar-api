@@ -165,6 +165,8 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
 
         let write_result = file.write_all(&data);
 
+        file.flush()?;
+
         match write_result {
             Ok(_) => {
                 println!("✅ File data written to temporary file: {}", &name);
