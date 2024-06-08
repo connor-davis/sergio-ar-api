@@ -82,11 +82,11 @@ Automatic Reports Consolidation API © 2023
         .await
     {
         Ok(pool) => {
-            println!("✅ Connection to the database is successful!");
+            tracing::info!("✅ Connection to the database is successful!");
             pool
         }
         Err(err) => {
-            println!("🔥 Failed to connect to the database: {:?}", err);
+            tracing::error!("🔥 Failed to connect to the database: {:?}", err);
             std::process::exit(1);
         }
     };
@@ -95,7 +95,7 @@ Automatic Reports Consolidation API © 2023
 
     match migration_result {
         Ok(_) => {
-            println!("✅ Database migration successful!");
+            tracing::info!("✅ Database migration successful!");
 
             let app_state = AppState {
                 db: pool.clone(),
@@ -123,14 +123,14 @@ Automatic Reports Consolidation API © 2023
 
             let listener = TcpListener::bind(&address).await?;
 
-            println!("🚀 Listening on http://{}", address);
+            tracing::info!("🚀 Listening on http://{}", address);
 
             axum::serve(listener, app.into_make_service()).await?;
 
             Ok(())
         }
         Err(err) => {
-            println!("🔥 Database migration failed: {:?}", err);
+            tracing::error!("🔥 Database migration failed: {:?}", err);
 
             Ok(())
         }

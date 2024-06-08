@@ -60,14 +60,14 @@ pub async fn upload_and_process(
 
     match upload_result {
         Ok(_) => {
-            println!("✅ Upload successful!");
+            tracing::info!("✅ Upload successful!");
 
             spawn(consolidate_files(app_state, query.date));
 
             Ok("Your files are being processed. Please check back periodically to see the processed data.")
         }
         Err(_) => {
-            println!("🔥 Upload failed!");
+            tracing::error!("🔥 Upload failed!");
 
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -86,22 +86,22 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
     match temp_directory_exists {
         Ok(directory) => {
             if !directory {
-                println!("❕ Temp directory not found. Creating temp directory.");
+                tracing::info!("❕ Temp directory not found. Creating temp directory.");
 
                 let create_dir_result = create_dir("temp").await;
 
                 match create_dir_result {
                     Ok(_) => {
-                        println!("✅ Temp directory created.")
+                        tracing::info!("✅ Temp directory created.")
                     }
                     Err(_) => {
-                        println!("🔥 Failed to create the temp directory.")
+                        tracing::error!("🔥 Failed to create the temp directory.")
                     }
                 }
             }
         }
         Err(_) => {
-            println!("🔥 Unknown error when checking if the temp directory exists.")
+            tracing::error!("🔥 Unknown error when checking if the temp directory exists.")
         }
     }
 
@@ -111,22 +111,22 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
     match directory_exists {
         Ok(directory) => {
             if !directory {
-                println!("❕ Directory not found. Creating.");
+                tracing::info!("❕ Directory not found. Creating.");
 
                 let create_dir_result = create_dir(&directory_path).await;
 
                 match create_dir_result {
                     Ok(_) => {
-                        println!("✅ Directory created.");
+                        tracing::info!("✅ Directory created.");
                     }
                     Err(_) => {
-                        println!("🔥 Failed to create directory.");
+                        tracing::error!("🔥 Failed to create directory.");
                     }
                 }
             }
         }
         Err(_) => {
-            println!("🔥 Unknown error when checking directory exists.")
+            tracing::error!("🔥 Unknown error when checking directory exists.")
         }
     }
 
@@ -152,10 +152,10 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
 
         match write_result {
             Ok(_) => {
-                println!("✅ File data written to temporary file: {}", &name);
+                tracing::info!("✅ File data written to temporary file: {}", &name);
             }
             Err(_) => {
-                println!("🔥 Failed to write file data to temporary file.");
+                tracing::error!("🔥 Failed to write file data to temporary file.");
             }
         }
     }
@@ -199,13 +199,13 @@ async fn consolidate_files(
         .worksheet_range(second_dialogue_workbook.sheet_names()[0].as_str())
         .expect("Cannot open second dialogue sheet.");
 
-    println!("✅ Successfully opened all dialogue files.");
+    tracing::info!("✅ Successfully opened all dialogue files.");
 
-    println!("❕ Attempting custom parser");
+    tracing::info!("❕ Attempting custom parser");
 
     let parse_result = InvoicingParser::parse_invoicing_file(&invoicing_file_path).await?;
 
-    println!("✅ Successfully parsed invoicing file.");
+    tracing::info!("✅ Successfully parsed invoicing file.");
 
     let invoicing_sheet = csv::Reader::from_reader(parse_result.as_bytes())
         .into_records()
@@ -213,9 +213,9 @@ async fn consolidate_files(
         .filter(|record| record.len() > 0)
         .collect::<Vec<_>>();
 
-    println!("✅ Successfully opened invoicing file.");
+    tracing::info!("✅ Successfully opened invoicing file.");
 
-    println!("❕ Consolidating files...");
+    tracing::info!("❕ Consolidating files...");
 
     let mut first_dialogue_rows: Vec<DialogueRow> = Vec::new();
 
@@ -226,7 +226,7 @@ async fn consolidate_files(
     let mut end_date_temp = String::new();
 
     // Consolidate first dialogue file
-    println!("❕ Mapping first dialogue file...");
+    tracing::info!("❕ Mapping first dialogue file...");
 
     let file_rows = first_sheet.rows().enumerate().collect::<Vec<_>>();
     let file_rows = file_rows.iter().skip(10).collect::<Vec<_>>();
@@ -325,10 +325,10 @@ async fn consolidate_files(
         }
     }
 
-    println!("✅ Successfully mapped first dialogue file.");
+    tracing::info!("✅ Successfully mapped first dialogue file.");
 
     // Consolidate second dialogue file
-    println!("❕ Mapping second dialogue file...");
+    tracing::info!("❕ Mapping second dialogue file...");
 
     let mut second_dialogue_rows: Vec<DialogueRow> = Vec::new();
 
@@ -429,10 +429,10 @@ async fn consolidate_files(
         }
     }
 
-    println!("✅ Successfully mapped second dialogue file.");
+    tracing::info!("✅ Successfully mapped second dialogue file.");
 
     // Consolidate invoicing file
-    println!("❕ Mapping invoicing file...");
+    tracing::info!("❕ Mapping invoicing file...");
 
     let mut invoicing_rows: Vec<InvoicingRow> = Vec::new();
 
@@ -537,9 +537,9 @@ async fn consolidate_files(
         }
     }
 
-    println!("✅ Successfully mapped invoicing file.");
+    tracing::info!("✅ Successfully mapped invoicing file.");
 
-    println!(
+    tracing::info!(
         "❕ Storing invoice {:?} rows to the database.",
         invoicing_rows.len()
     );
@@ -606,7 +606,7 @@ async fn consolidate_files(
                             updated_invoices += 1;
                         }
                         Err(_) => {
-                            println!("🔥 Error updating invoice row.");
+                            tracing::error!("🔥 Error updating invoice row.");
 
                             skipped_invoices += 1;
                         }
@@ -654,7 +654,7 @@ async fn consolidate_files(
                             inserted_invoices += 1;
                         }
                         Err(_) => {
-                            println!("🔥 Error inserting invoice row.");
+                            tracing::error!("🔥 Error inserting invoice row.");
 
                             skipped_invoices += 1;
                         }
@@ -662,17 +662,17 @@ async fn consolidate_files(
                 }
             },
             Err(_) => {
-                println!("🔥 Error fetching existing invoice row.");
+                tracing::info!("🔥 Error fetching existing invoice row.");
 
                 skipped_invoices += 1;
             }
         }
     }
 
-    println!("❕ Consolidating dialogues...");
+    tracing::info!("❕ Consolidating dialogues...");
 
-    println!("❕ First dialogue rows: {}", first_dialogue_rows.len());
-    println!("❕ Second dialogue rows: {}", second_dialogue_rows.len());
+    tracing::info!("❕ First dialogue rows: {}", first_dialogue_rows.len());
+    tracing::info!("❕ Second dialogue rows: {}", second_dialogue_rows.len());
 
     // Split the first and second dialogue rows by their shift group
     let mut first_dialogue_rows_split: HashMap<String, Vec<DialogueRow>> = HashMap::new();
@@ -882,9 +882,9 @@ async fn consolidate_files(
         }
     }
 
-    println!("❕ Consolidated rows: {}", consolidated_rows.len());
+    tracing::info!("❕ Consolidated rows: {}", consolidated_rows.len());
 
-    println!("✅ Successfully consolidated dialogues.");
+    tracing::info!("✅ Successfully consolidated dialogues.");
 
     consolidated_rows.sort_by(|a, b| {
         let a_date = a.start_date.split(" ").collect::<Vec<_>>()[0];
@@ -949,9 +949,9 @@ async fn consolidate_files(
         })
         .collect::<Vec<&DialogueConsolidatedRow>>();
 
-    println!("❕ Consolidated rows: {}", consolidated_rows.len());
+    tracing::info!("❕ Consolidated rows: {}", consolidated_rows.len());
 
-    println!("❕ Storing consolidated rows to the database...");
+    tracing::info!("❕ Storing consolidated rows to the database...");
 
     let mut new_teachers = 0;
     let mut skipped_teachers = 0;
@@ -1015,7 +1015,7 @@ async fn consolidate_files(
             .fetch_optional(&app_state.db)
             .await
             .map_err(|_| {
-                println!("🔥 Failed to fetch teacher from the database.");
+                tracing::error!("🔥 Failed to fetch teacher from the database.");
 
                 Error::msg("Failed to fetch teacher from the database.")
             })?;
@@ -1034,7 +1034,7 @@ async fn consolidate_files(
                 .fetch_one(&app_state.db)
                 .await
                 .map_err(|_| {
-                    println!("🔥 Failed to insert teacher into the database.");
+                    tracing::error!("🔥 Failed to insert teacher into the database.");
 
                     Error::msg("Failed to insert teacher into the database.")
                 })?;
@@ -1057,7 +1057,7 @@ async fn consolidate_files(
         .fetch_optional(&app_state.db)
         .await
         .map_err(|_| {
-            println!("🔥 Failed to fetch schedule from the database.");
+            tracing::error!("🔥 Failed to fetch schedule from the database.");
 
             Error::msg("Failed to fetch schedule from the database.")
         })?;
@@ -1079,7 +1079,7 @@ async fn consolidate_files(
                 .execute(&app_state.db)
                 .await
                 .map_err(|_| {
-                    println!("🔥 Failed to insert schedule into the database.");
+                    tracing::error!("🔥 Failed to insert schedule into the database.");
 
                     Error::msg("Failed to insert schedule into the database.")
                 })?;
@@ -1089,7 +1089,7 @@ async fn consolidate_files(
         }
     }
 
-    println!("✅ Invoicing consolidation complete.");
+    tracing::info!("✅ Invoicing consolidation complete.");
 
     Ok(Json(json!({
         "status": StatusCode::OK.as_u16(),
