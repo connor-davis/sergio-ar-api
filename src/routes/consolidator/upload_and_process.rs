@@ -56,28 +56,25 @@ pub async fn upload_and_process(
     State(app_state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let upload_result = store_files(&mut multipart, &query.date).await;
-
-    match upload_result {
-        Ok(_) => {
-            tracing::info!("✅ Upload successful!");
-
-            spawn(async move { consolidate_files(app_state, query.date).await });
-
-            Ok("Your files are being processed. Please check back periodically to see the processed data.")
-        }
-        Err(_) => {
+    store_files(&mut multipart, &query.date)
+        .await
+        .map_err(|error| {
             tracing::error!("🔥 Upload failed!");
 
-            Err((
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({
                     "status": StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
                     "message": "Upload failed. Please contact the developer.",
                 })),
-            ))
-        }
-    }
+            )
+        })?;
+
+    tracing::info!("✅ Upload successful!");
+
+    spawn(async move { consolidate_files(app_state, query.date).await });
+
+    Ok("Your files are being processed. Please check back periodically to see the processed data.")
 }
 
 async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error> {
