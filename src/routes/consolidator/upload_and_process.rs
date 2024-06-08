@@ -12,8 +12,8 @@ use chrono::{Datelike, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
-    fs::{create_dir, try_exists, File},
-    io::AsyncWriteExt,
+    fs::{create_dir, try_exists},
+    spawn,
 };
 
 use crate::{utils::invoicing_parser::InvoicingParser, AppState};
@@ -62,26 +62,9 @@ pub async fn upload_and_process(
         Ok(_) => {
             println!("✅ Upload successful!");
 
-            let process_result = consolidate_files(app_state, &query.date).await;
+            spawn(consolidate_files(app_state, query.date));
 
-            match process_result {
-                Ok(process_result) => {
-                    println!("✅ Consolidation successful!");
-
-                    Ok(process_result)
-                }
-                Err(_) => {
-                    println!("🔥 Consolidation failed!");
-
-                    Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({
-                            "status": StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                            "message": "Consolidation failed. Please contact the developer.",
-                        })),
-                    ))
-                }
-            }
+            Ok("Your files are being processed. Please check back periodically to see the processed data.")
         }
         Err(_) => {
             println!("🔥 Upload failed!");
@@ -182,7 +165,7 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
 
 async fn consolidate_files(
     app_state: AppState,
-    process_date: &str,
+    process_date: String,
 ) -> Result<impl IntoResponse, Error> {
     let first_dialogue_file_path = format!("temp/{}/{}", process_date, "dialogue-1.xlsx");
     let second_dialogue_file_path = format!("temp/{}/{}", process_date, "dialogue-2.xlsx");
