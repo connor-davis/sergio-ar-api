@@ -12,7 +12,8 @@ use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_appender::rolling;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
 
 use crate::{config::Config, router::create_router};
 
@@ -41,11 +42,36 @@ Automatic Reports Consolidation API © 2023
         "#
     );
 
+    let info_log_file = rolling::daily("./logs", "log");
+
+    let info_log = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_writer(info_log_file)
+        .with_level(true)
+        .with_target(true)
+        .with_line_number(true)
+        .with_thread_names(true)
+        .with_ansi(false)
+        .json()
+        .with_filter(tracing_subscriber::EnvFilter::new(
+            std::env::var("RUST_LOG")
+                .unwrap_or_else(|_| "sergio_ar_api=debug,tower_http=debug,sqlx=debug".into()),
+        ));
+
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "api=debug,tower_http=debug".into()),
-        ))
-        .with(tracing_subscriber::fmt::layer())
+        .with(info_log)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .compact()
+                .with_writer(std::io::stdout)
+                .with_level(true)
+                .with_thread_names(true)
+                .with_ansi(true)
+                .with_filter(tracing_subscriber::EnvFilter::new(
+                    std::env::var("RUST_LOG")
+                        .unwrap_or_else(|_| "sergio_ar_api=debug,tower_http=debug".into()),
+                )),
+        )
         .init();
 
     let config = Config::init();
