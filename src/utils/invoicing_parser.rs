@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufReader, Read},
+    io::{BufReader, Read, Write},
 };
 
 use anyhow::Error;
@@ -10,31 +10,15 @@ pub struct InvoicingParser {}
 impl InvoicingParser {
     pub async fn parse_invoicing_file(file_path: &str) -> Result<String, Error> {
         // Open the csv file.
-        let file = File::open(file_path)?;
-        let reader = BufReader::new(file);
+        let mut file = File::open(file_path)?;
+        let mut lines = String::new();
 
-        let mut lines: String = String::new();
+        file.read_to_string(&mut lines)?;
+        file.flush()?;
 
-        for byte in reader.bytes() {
-            match byte {
-                Ok(byte) => {
-                    if byte == 0 {
-                        continue;
-                    }
+        let lines = lines.replace("\t", ",");
 
-                    let byte = byte as char;
-
-                    if byte == '\t' {
-                        lines.push(',');
-                    } else {
-                        lines.push(byte);
-                    }
-                }
-                Err(err) => {
-                    println!("🔥 Failed to read byte: {:?}", err);
-                }
-            }
-        }
+        println!("{:?}", lines);
 
         Ok(lines)
     }
