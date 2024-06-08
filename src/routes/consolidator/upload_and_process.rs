@@ -464,8 +464,6 @@ async fn consolidate_files(
     let mut invoicing_rows: Vec<InvoicingRow> = Vec::new();
 
     for row in invoicing_sheet {
-        println!("{:?}", row);
-
         let teacher_name = row.get(4);
         let eligible = row.get(5);
         let activity_start = row.get(7);
