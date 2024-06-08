@@ -1,4 +1,8 @@
-use std::{collections::HashMap, io::Write};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{Read, Write},
+};
 
 use anyhow::Error;
 use axum::{
@@ -208,9 +212,14 @@ async fn consolidate_files(
 
     tracing::info!("✅ Successfully opened all dialogue files.");
 
+    let file = File::open(invoicing_file_path)?;
+
     let reader = ReaderBuilder::new()
         .delimiter(b'\t')
-        .from_path(invoicing_file_path)?;
+        .flexible(true)
+        // edit: as noted by @BurntSushi5 we have to disable headers here.
+        .has_headers(false)
+        .from_reader(file);
 
     let invoicing_sheet = reader
         .into_records()

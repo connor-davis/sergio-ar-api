@@ -1,6 +1,7 @@
-#![allow(unused)]
-
-use std::fs::read_to_string;
+use std::{
+    fs::File,
+    io::{BufReader, Read},
+};
 
 use anyhow::Error;
 
@@ -9,18 +10,32 @@ pub struct InvoicingParser {}
 impl InvoicingParser {
     pub async fn parse_invoicing_file(file_path: &str) -> Result<String, Error> {
         // Open the csv file.
-        tracing::info!("❕ Opening file {}", file_path);
-        tracing::info!("❕ Reading file to string.");
-        let lines = read_to_string(file_path)?;
+        let file = File::open(file_path)?;
 
-        println!("{}", lines);
+        let reader = BufReader::new(file);
 
-        tracing::info!("❕ Done");
+        let mut lines: String = String::new();
 
-        tracing::info!("❕ Replacing tab stops.");
-        let lines = lines.replace("\t", ",");
+        for byte in reader.bytes() {
+            match byte {
+                Ok(byte) => {
+                    if byte == 0 {
+                        continue;
+                    }
 
-        tracing::info!("{:?}", lines);
+                    let byte = byte as char;
+
+                    if byte == '\t' {
+                        lines.push(',');
+                    } else {
+                        lines.push(byte);
+                    }
+                }
+                Err(err) => {
+                    println!("🔥 Failed to read byte: {:?}", err);
+                }
+            }
+        }
 
         Ok(lines)
     }
