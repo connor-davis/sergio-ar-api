@@ -16,6 +16,9 @@ impl InvoicingParser {
 
         tracing::info!("❕ Reading file to string.");
         file.read_to_string(&mut lines)?;
+
+        println!("{}", lines);
+
         file.flush()?;
         tracing::info!("❕ Done");
 
