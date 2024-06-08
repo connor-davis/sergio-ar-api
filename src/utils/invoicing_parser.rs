@@ -1,7 +1,6 @@
-use std::{
-    fs::{read_to_string, File},
-    io::{Read, Write},
-};
+#![allow(unused)]
+
+use std::fs::read_to_string;
 
 use anyhow::Error;
 

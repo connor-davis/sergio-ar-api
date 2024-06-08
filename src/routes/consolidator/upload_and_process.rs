@@ -9,11 +9,12 @@ use axum::{
 };
 use calamine::{open_workbook, Reader, Xlsx};
 use chrono::{Datelike, NaiveDateTime};
+use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::fs::{create_dir, try_exists};
 
-use crate::{utils::invoicing_parser::InvoicingParser, AppState};
+use crate::AppState;
 
 #[derive(Deserialize)]
 pub struct UploadAndProcessQuery {
@@ -207,13 +208,11 @@ async fn consolidate_files(
 
     tracing::info!("✅ Successfully opened all dialogue files.");
 
-    tracing::info!("❕ Attempting custom parser");
+    let reader = ReaderBuilder::new()
+        .delimiter(b'\t')
+        .from_path(invoicing_file_path)?;
 
-    let parse_result = InvoicingParser::parse_invoicing_file(&invoicing_file_path).await?;
-
-    tracing::info!("✅ Successfully parsed invoicing file.");
-
-    let invoicing_sheet = csv::Reader::from_reader(parse_result.as_bytes())
+    let invoicing_sheet = reader
         .into_records()
         .map(|record| record.unwrap_or(csv::StringRecord::new()))
         .filter(|record| record.len() > 0)
