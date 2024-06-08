@@ -62,7 +62,7 @@ pub async fn upload_and_process(
         Ok(_) => {
             tracing::info!("✅ Upload successful!");
 
-            spawn(consolidate_files(app_state, query.date));
+            spawn(async move { consolidate_files(app_state, query.date).await });
 
             Ok("Your files are being processed. Please check back periodically to see the processed data.")
         }
