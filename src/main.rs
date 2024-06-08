@@ -52,6 +52,7 @@ Automatic Reports Consolidation API © 2023
         .with_line_number(true)
         .with_thread_names(true)
         .with_ansi(false)
+        .with_thread_ids(true)
         .json()
         .with_filter(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG")
@@ -67,6 +68,7 @@ Automatic Reports Consolidation API © 2023
                 .with_level(true)
                 .with_thread_names(true)
                 .with_ansi(true)
+                .with_thread_ids(true)
                 .with_filter(tracing_subscriber::EnvFilter::new(
                     std::env::var("RUST_LOG")
                         .unwrap_or_else(|_| "sergio_ar_api=debug,tower_http=debug".into()),
