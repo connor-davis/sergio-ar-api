@@ -8,10 +8,9 @@ use axum::{
         HeaderValue, Method,
     },
 };
-use chrono::Duration;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tokio::net::TcpListener;
-use tower::{timeout::TimeoutLayer, ServiceBuilder};
+use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing_appender::rolling;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
@@ -116,8 +115,6 @@ Automatic Reports Consolidation API © 2023
                 .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
                 .allow_credentials(true)
                 .allow_headers([AUTHORIZATION, ACCEPT, CONTENT_TYPE]);
-
-            let service = ServiceBuilder::new().layer(TimeoutLayer::new(Duration::from_secs(30)));
 
             let app = app
                 .layer(DefaultBodyLimit::max(100_000_000))

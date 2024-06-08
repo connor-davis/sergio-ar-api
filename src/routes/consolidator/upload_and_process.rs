@@ -11,10 +11,7 @@ use calamine::{open_workbook, Reader, Xlsx};
 use chrono::{Datelike, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::{
-    fs::{create_dir, try_exists},
-    spawn,
-};
+use tokio::fs::{create_dir, try_exists};
 
 use crate::{utils::invoicing_parser::InvoicingParser, AppState};
 
