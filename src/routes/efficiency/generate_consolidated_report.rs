@@ -96,7 +96,7 @@ pub async fn generate_consolidated_report(
     });
 
     let mut consolidated_report_csv =
-        "Teacher,Shift,Shift Type,Start Date,End Date,,,,Teacher,Scheduled,Picked Up,Dropped\n"
+        "Teacher,Shift,Shift Type,Start Date,End Date,,,,Teacher,Scheduled,Picked Up,Dropped,Internal Pickups\n"
             .to_string();
 
     let mut csv_lines: Vec<String> = Vec::new();
@@ -129,6 +129,7 @@ pub async fn generate_consolidated_report(
         let mut scheduled = 0;
         let mut picked_up = 0;
         let mut dropped = 0;
+        let mut internal_pickups = 0;
 
         for schedule in schedules_for_range
             .clone()
@@ -140,8 +141,8 @@ pub async fn generate_consolidated_report(
 
             match schedule.shift_type.as_str() {
                 "Pickup" => picked_up += 1,
-                "Internal Pickup" => picked_up += 1,
-                "Dropped & Picked Up" => picked_up += 1,
+                "Internal Pickup" => internal_pickups += 1,
+                "Dropped & Picked Up" => internal_pickups += 1,
                 "Dropped" => dropped += 1,
                 _ => {}
             }
@@ -152,8 +153,8 @@ pub async fn generate_consolidated_report(
         let mut new_line = initial_line.replace("\n", "");
 
         new_line.push_str(&format!(
-            "{},{},{},{}\n",
-            teacher, scheduled, picked_up, dropped
+            "{},{},{},{},{}\n",
+            teacher, scheduled, picked_up, dropped, internal_pickups
         ));
 
         csv_lines[current_teacher] = new_line;
