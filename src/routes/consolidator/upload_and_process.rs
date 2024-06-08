@@ -1089,6 +1089,8 @@ async fn consolidate_files(
         }
     }
 
+    println!("✅ Invoicing consolidation complete.");
+
     Ok(Json(json!({
         "status": StatusCode::OK.as_u16(),
         "message": "Consolidation successful.",
