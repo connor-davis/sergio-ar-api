@@ -213,13 +213,39 @@ async fn consolidate_files(
     tracing::info!("✅ Successfully opened all dialogue files.");
 
     let file = File::open(invoicing_file_path)?;
+    let mut parser_csv_reader = csv::ReaderBuilder::new().from_reader(file);
 
-    let reader = ReaderBuilder::new()
-        .delimiter(b'\t')
-        .flexible(true)
-        // edit: as noted by @BurntSushi5 we have to disable headers here.
-        .has_headers(false)
-        .from_reader(file);
+    let mut data = String::new();
+
+    for record in parser_csv_reader.byte_records() {
+        let record = record?;
+
+        for piece in record.into_iter() {
+            for c in piece.into_iter() {
+                let byte = c.to_string().parse::<u8>()?;
+
+                if byte == 0 {
+                    continue;
+                }
+
+                if byte == b'\n' {
+                    continue;
+                }
+
+                if byte == b'\t' {
+                    data.push_str(",")
+                } else {
+                    data.push(byte as char);
+                }
+            }
+
+            data.push_str("\n")
+        }
+    }
+
+    let data = data.replace("\n\n", "\n");
+
+    let reader = ReaderBuilder::new().from_reader(data.as_bytes());
 
     let invoicing_sheet = reader
         .into_records()
