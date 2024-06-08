@@ -58,7 +58,7 @@ pub async fn upload_and_process(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     store_files(&mut multipart, &query.date)
         .await
-        .map_err(|error| {
+        .map_err(|_error| {
             tracing::error!("🔥 Upload failed!");
 
             (
@@ -72,7 +72,19 @@ pub async fn upload_and_process(
 
     tracing::info!("✅ Upload successful!");
 
-    spawn(async move { consolidate_files(app_state, query.date).await });
+    consolidate_files(app_state, query.date)
+        .await
+        .map_err(|error| {
+            tracing::error!("🔥 Failed to consolidate files: {}", error);
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "status": StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                    "message": "Upload failed. Please contact the developer.",
+                })),
+            )
+        })?;
 
     Ok("Your files are being processed. Please check back periodically to see the processed data.")
 }
