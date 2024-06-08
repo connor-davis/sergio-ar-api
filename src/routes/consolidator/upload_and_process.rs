@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{Read, Write},
-};
+use std::{collections::HashMap, fs::File, io::Write};
 
 use anyhow::Error;
 use axum::{
@@ -16,7 +12,10 @@ use chrono::{Datelike, NaiveDateTime};
 use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::fs::{create_dir, try_exists};
+use tokio::{
+    fs::{create_dir, try_exists},
+    spawn,
+};
 
 use crate::AppState;
 
@@ -74,19 +73,7 @@ pub async fn upload_and_process(
 
     tracing::info!("✅ Upload successful!");
 
-    consolidate_files(app_state, query.date)
-        .await
-        .map_err(|error| {
-            tracing::error!("🔥 Failed to consolidate files: {}", error);
-
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({
-                    "status": StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-                    "message": "Upload failed. Please contact the developer.",
-                })),
-            )
-        })?;
+    spawn(consolidate_files(app_state, query.date));
 
     Ok("Your files are being processed. Please check back periodically to see the processed data.")
 }
