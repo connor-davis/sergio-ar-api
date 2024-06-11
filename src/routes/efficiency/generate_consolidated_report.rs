@@ -143,10 +143,7 @@ pub async fn generate_consolidated_report(
             match schedule.shift_type.as_str() {
                 "Pickup" => picked_up += 1,
                 "Internal Pickup" => internal_picked_up += 1,
-                "Dropped & Picked Up" => {
-                    picked_up += 1;
-                    total_dropped += 1;
-                }
+                "Dropped & Picked Up" => dropped += 1,
                 "Dropped" => dropped += 1,
                 _ => {}
             }
