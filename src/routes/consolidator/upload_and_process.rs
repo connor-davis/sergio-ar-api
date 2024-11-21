@@ -309,6 +309,9 @@ async fn consolidate_files(
         };
 
         let dialogue_row_start_date = dialogue_row.start_date.split(" ").collect::<Vec<_>>()[0];
+
+        println!("{:?}", dialogue_row_start_date);
+
         let dialogue_row_start_day = dialogue_row_start_date.split("/").collect::<Vec<_>>()[1];
         let dialogue_row_start_month = dialogue_row_start_date.split("/").collect::<Vec<_>>()[0];
         let dialogue_row_start_year = dialogue_row_start_date.split("/").collect::<Vec<_>>()[2];
