@@ -701,213 +701,341 @@ async fn consolidate_files(
     tracing::info!("❕ First dialogue rows: {}", first_dialogue_rows.len());
     tracing::info!("❕ Second dialogue rows: {}", second_dialogue_rows.len());
 
-    // Split the first and second dialogue rows by their shift group
-    let mut first_dialogue_rows_split: HashMap<String, Vec<DialogueRow>> = HashMap::new();
-
-    for row in first_dialogue_rows {
-        let shift_group = row.shift_group.clone();
-
-        if first_dialogue_rows_split.contains_key(&shift_group) {
-            let shift_group_rows = first_dialogue_rows_split.get_mut(&shift_group).unwrap();
-
-            shift_group_rows.push(row);
-        } else {
-            let mut shift_group_rows: Vec<DialogueRow> = Vec::new();
-
-            shift_group_rows.push(row);
-
-            first_dialogue_rows_split.insert(shift_group, shift_group_rows);
-        }
-    }
-
-    let mut second_dialogue_rows_split: HashMap<String, Vec<DialogueRow>> = HashMap::new();
-
-    for row in second_dialogue_rows {
-        let shift_group = row.shift_group.clone();
-
-        if second_dialogue_rows_split.contains_key(&shift_group) {
-            let shift_group_rows = second_dialogue_rows_split.get_mut(&shift_group).unwrap();
-
-            shift_group_rows.push(row);
-        } else {
-            let mut shift_group_rows: Vec<DialogueRow> = Vec::new();
-
-            shift_group_rows.push(row);
-
-            second_dialogue_rows_split.insert(shift_group, shift_group_rows);
-        }
-    }
-
-    // Consolidate the first and second dialogue rows by their shift group
     let mut consolidated_rows: Vec<DialogueConsolidatedRow> = Vec::new();
 
-    for (shift_group, first_dialogue_rows) in first_dialogue_rows_split {
-        let second_dialogue_rows = second_dialogue_rows_split.get(&shift_group);
+    let first_shifts = first_dialogue_rows
+        .iter()
+        .map(|row| row.shift.clone())
+        .collect::<Vec<String>>();
+    let second_shifts = second_dialogue_rows
+        .iter()
+        .map(|row| row.shift.clone())
+        .collect::<Vec<String>>();
 
-        match second_dialogue_rows {
-            Some(second_dialogue_rows) => {
-                let first_shifts = first_dialogue_rows
+    let lost_shifts = first_shifts
+        .iter()
+        .filter(|shift| !second_shifts.contains(shift))
+        .collect::<Vec<&String>>();
+    let new_shifts = second_shifts
+        .iter()
+        .filter(|shift| !first_shifts.contains(shift))
+        .collect::<Vec<&String>>();
+
+    let previous_shift_teachers = first_dialogue_rows
+        .iter()
+        .map(|row| {
+            (
+                row.shift.clone(),
+                format!("{}:{}", row.teacher_name, row.shift_group),
+            )
+        })
+        .collect::<HashMap<String, String>>();
+
+    let picked_up_shifts = second_dialogue_rows
+        .iter()
+        .filter(|row| {
+            let previous_shift_assignment = previous_shift_teachers.get(&row.shift);
+
+            match previous_shift_assignment {
+                Some(previous_shift_assignment) => {
+                    let shift_assignment_split =
+                        previous_shift_assignment.split(":").collect::<Vec<_>>();
+
+                    let shift_teacher = shift_assignment_split[0];
+                    let shift_group = shift_assignment_split[1];
+
+                    if shift_teacher != row.teacher_name && shift_group == row.shift_group {
+                        true
+                    } else {
+                        false
+                    }
+                }
+                None => false,
+            }
+        })
+        .map(|row| row.shift.clone())
+        .collect::<Vec<String>>();
+
+    let lost_but_picked_up_shifts = first_dialogue_rows
+        .iter()
+        .filter(|row| {
+            let second_shift = second_shifts.contains(&row.shift);
+
+            if second_shift {
+                let second_dialogue_row = second_dialogue_rows
                     .iter()
-                    .map(|row| row.shift.clone())
-                    .collect::<Vec<String>>();
-                let second_shifts = second_dialogue_rows
-                    .iter()
-                    .map(|row| row.shift.clone())
-                    .collect::<Vec<String>>();
+                    .find(|second_dialogue_row| second_dialogue_row.shift == row.shift);
 
-                let lost_shifts = first_shifts
-                    .iter()
-                    .filter(|shift| !second_shifts.contains(shift))
-                    .collect::<Vec<&String>>();
-                let new_shifts = second_shifts
-                    .iter()
-                    .filter(|shift| !first_shifts.contains(shift))
-                    .collect::<Vec<&String>>();
-
-                let previous_shift_teachers = first_dialogue_rows
-                    .iter()
-                    .map(|row| (row.shift.clone(), row.teacher_name.clone()))
-                    .collect::<HashMap<String, String>>();
-
-                let picked_up_shifts = second_dialogue_rows
-                    .iter()
-                    .filter(|row| {
-                        let previous_shift_teacher = previous_shift_teachers.get(&row.shift);
-
-                        match previous_shift_teacher {
-                            Some(previous_shift_teacher) => {
-                                if previous_shift_teacher != &row.teacher_name {
-                                    true
-                                } else {
-                                    false
-                                }
-                            }
-                            None => false,
-                        }
-                    })
-                    .map(|row| row.shift.clone())
-                    .collect::<Vec<String>>();
-
-                let lost_but_picked_up_shifts = first_dialogue_rows
-                    .iter()
-                    .filter(|row| {
-                        let second_shift = second_shifts.contains(&row.shift);
-
-                        if second_shift {
-                            let second_dialogue_row = second_dialogue_rows
-                                .iter()
-                                .find(|second_dialogue_row| second_dialogue_row.shift == row.shift);
-
-                            match second_dialogue_row {
-                                Some(second_dialogue_row) => {
-                                    if second_dialogue_row.teacher_name != row.teacher_name {
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                }
-                                None => false,
-                            }
+                match second_dialogue_row {
+                    Some(second_dialogue_row) => {
+                        if second_dialogue_row.teacher_name != row.teacher_name {
+                            true
                         } else {
                             false
                         }
-                    })
-                    .map(|row| row.shift.clone())
-                    .collect::<Vec<String>>();
-
-                for current_shift in second_dialogue_rows
-                    .iter()
-                    .filter(|row| new_shifts.contains(&&row.shift))
-                    .collect::<Vec<&DialogueRow>>()
-                {
-                    let consolidated_row = DialogueConsolidatedRow {
-                        shift_group: shift_group.clone(),
-                        shift: current_shift.shift.clone(),
-                        shift_type: "Pickup".to_string(),
-                        teacher_name: current_shift.teacher_name.clone(),
-                        start_date: current_shift.start_date.clone(),
-                        end_date: current_shift.end_date.clone(),
-                    };
-
-                    consolidated_rows.push(consolidated_row);
+                    }
+                    None => false,
                 }
-
-                for current_shift in second_dialogue_rows
-                    .iter()
-                    .filter(|row| picked_up_shifts.contains(&&row.shift))
-                    .collect::<Vec<&DialogueRow>>()
-                {
-                    let consolidated_row = DialogueConsolidatedRow {
-                        shift_group: shift_group.clone(),
-                        shift: current_shift.shift.clone(),
-                        shift_type: "Internal Pickup".to_string(),
-                        teacher_name: current_shift.teacher_name.clone(),
-                        start_date: current_shift.start_date.clone(),
-                        end_date: current_shift.end_date.clone(),
-                    };
-
-                    consolidated_rows.push(consolidated_row);
-                }
-
-                for current_shift in first_dialogue_rows
-                    .iter()
-                    .filter(|row| lost_shifts.contains(&&row.shift))
-                    .collect::<Vec<&DialogueRow>>()
-                {
-                    let consolidated_row = DialogueConsolidatedRow {
-                        shift_group: shift_group.clone(),
-                        shift: current_shift.shift.clone(),
-                        shift_type: "Dropped".to_string(),
-                        teacher_name: current_shift.teacher_name.clone(),
-                        start_date: current_shift.start_date.clone(),
-                        end_date: current_shift.end_date.clone(),
-                    };
-
-                    consolidated_rows.push(consolidated_row);
-                }
-
-                for current_shift in first_dialogue_rows
-                    .iter()
-                    .filter(|row| lost_but_picked_up_shifts.contains(&&row.shift))
-                    .collect::<Vec<&DialogueRow>>()
-                {
-                    let consolidated_row = DialogueConsolidatedRow {
-                        shift_group: shift_group.clone(),
-                        shift: current_shift.shift.clone(),
-                        shift_type: "Dropped & Picked Up".to_string(),
-                        teacher_name: current_shift.teacher_name.clone(),
-                        start_date: current_shift.start_date.clone(),
-                        end_date: current_shift.end_date.clone(),
-                    };
-
-                    consolidated_rows.push(consolidated_row);
-                }
-
-                for current_shift in second_dialogue_rows
-                    .iter()
-                    .filter(|row| {
-                        !picked_up_shifts.contains(&&row.shift)
-                            && !new_shifts.contains(&&row.shift)
-                            && !lost_shifts.contains(&&row.shift)
-                            && !lost_but_picked_up_shifts.contains(&&row.shift)
-                    })
-                    .collect::<Vec<&DialogueRow>>()
-                {
-                    let consolidated_row = DialogueConsolidatedRow {
-                        shift_group: shift_group.clone(),
-                        shift: current_shift.shift.clone(),
-                        shift_type: "-".to_string(),
-                        teacher_name: current_shift.teacher_name.clone(),
-                        start_date: current_shift.start_date.clone(),
-                        end_date: current_shift.end_date.clone(),
-                    };
-
-                    consolidated_rows.push(consolidated_row);
-                }
+            } else {
+                false
             }
-            None => {}
-        }
+        })
+        .map(|row| row.shift.clone())
+        .collect::<Vec<String>>();
+
+    for current_shift in second_dialogue_rows {
+        let is_lost = lost_shifts.contains(&&current_shift.shift);
+        let is_new = new_shifts.contains(&&current_shift.shift);
+        let is_picked_up = picked_up_shifts.contains(&&current_shift.shift);
+        let is_lost_but_picked_up = lost_but_picked_up_shifts.contains(&&current_shift.shift);
+
+        let mut consolidated_row = DialogueConsolidatedRow {
+            shift_group: current_shift.shift_group.clone(),
+            shift: current_shift.shift.clone(),
+            shift_type: "-".to_string(),
+            teacher_name: current_shift.teacher_name.clone(),
+            start_date: current_shift.start_date.clone(),
+            end_date: current_shift.end_date.clone(),
+        };
+
+        match is_lost {
+            true => {
+                consolidated_row.shift_type = "Dropped".to_string();
+
+                consolidated_rows.push(consolidated_row);
+            }
+            false => match is_new {
+                true => {
+                    consolidated_row.shift_type = "Pickup".to_string();
+
+                    consolidated_rows.push(consolidated_row);
+                }
+                false => match is_picked_up {
+                    true => {
+                        consolidated_row.shift_type = "Internal Pickup".to_string();
+
+                        consolidated_rows.push(consolidated_row);
+                    }
+                    false => match is_lost_but_picked_up {
+                        true => {
+                            consolidated_row.shift_type = "Dropped & Picked Up".to_string();
+
+                            consolidated_rows.push(consolidated_row);
+                        }
+                        false => {
+                            consolidated_rows.push(consolidated_row);
+                        }
+                    },
+                },
+            },
+        };
     }
+
+    // let mut first_dialogue_rows_split: HashMap<String, Vec<DialogueRow>> = HashMap::new();
+
+    // for row in first_dialogue_rows {
+    //     let shift_group = row.shift_group.clone();
+
+    //     match first_dialogue_rows_split.get_mut(&shift_group) {
+    //         Some(shift_group_rows) => {
+    //             shift_group_rows.push(row);
+    //         }
+    //         None => {
+    //             let mut shift_group_rows: Vec<DialogueRow> = Vec::new();
+
+    //             shift_group_rows.push(row);
+
+    //             first_dialogue_rows_split.insert(shift_group, shift_group_rows);
+    //         }
+    //     }
+    // }
+
+    // let mut second_dialogue_rows_split: HashMap<String, Vec<DialogueRow>> = HashMap::new();
+
+    // for row in second_dialogue_rows {
+    //     let shift_group = row.shift_group.clone();
+
+    //     match second_dialogue_rows_split.get_mut(&shift_group) {
+    //         Some(shift_group_rows) => {
+    //             shift_group_rows.push(row);
+    //         }
+    //         None => {
+    //             let mut shift_group_rows: Vec<DialogueRow> = Vec::new();
+
+    //             shift_group_rows.push(row);
+
+    //             second_dialogue_rows_split.insert(shift_group, shift_group_rows);
+    //         }
+    //     }
+    // }
+
+    // for (shift_group, first_dialogue_rows) in first_dialogue_rows_split {
+    //     let second_dialogue_rows = second_dialogue_rows_split.get(&shift_group);
+
+    //     match second_dialogue_rows {
+    //         Some(second_dialogue_rows) => {
+    //             let first_shifts = first_dialogue_rows
+    //                 .iter()
+    //                 .map(|row| row.shift.clone())
+    //                 .collect::<Vec<String>>();
+    //             let second_shifts = second_dialogue_rows
+    //                 .iter()
+    //                 .map(|row| row.shift.clone())
+    //                 .collect::<Vec<String>>();
+
+    //             let lost_shifts = first_shifts
+    //                 .iter()
+    //                 .filter(|shift| !second_shifts.contains(shift))
+    //                 .collect::<Vec<&String>>();
+    //             let new_shifts = second_shifts
+    //                 .iter()
+    //                 .filter(|shift| !first_shifts.contains(shift))
+    //                 .collect::<Vec<&String>>();
+
+    //             let previous_shift_teachers = first_dialogue_rows
+    //                 .iter()
+    //                 .map(|row| (row.shift.clone(), row.teacher_name.clone()))
+    //                 .collect::<HashMap<String, String>>();
+
+    //             let picked_up_shifts = second_dialogue_rows
+    //                 .iter()
+    //                 .filter(|row| {
+    //                     let previous_shift_teacher = previous_shift_teachers.get(&row.shift);
+
+    //                     match previous_shift_teacher {
+    //                         Some(previous_shift_teacher) => {
+    //                             if previous_shift_teacher != &row.teacher_name {
+    //                                 true
+    //                             } else {
+    //                                 false
+    //                             }
+    //                         }
+    //                         None => false,
+    //                     }
+    //                 })
+    //                 .map(|row| row.shift.clone())
+    //                 .collect::<Vec<String>>();
+
+    //             let lost_but_picked_up_shifts = first_dialogue_rows
+    //                 .iter()
+    //                 .filter(|row| {
+    //                     let second_shift = second_shifts.contains(&row.shift);
+
+    //                     if second_shift {
+    //                         let second_dialogue_row = second_dialogue_rows
+    //                             .iter()
+    //                             .find(|second_dialogue_row| second_dialogue_row.shift == row.shift);
+
+    //                         match second_dialogue_row {
+    //                             Some(second_dialogue_row) => {
+    //                                 if second_dialogue_row.teacher_name != row.teacher_name {
+    //                                     true
+    //                                 } else {
+    //                                     false
+    //                                 }
+    //                             }
+    //                             None => false,
+    //                         }
+    //                     } else {
+    //                         false
+    //                     }
+    //                 })
+    //                 .map(|row| row.shift.clone())
+    //                 .collect::<Vec<String>>();
+
+    //             for current_shift in second_dialogue_rows
+    //                 .iter()
+    //                 .filter(|row| new_shifts.contains(&&row.shift))
+    //                 .collect::<Vec<&DialogueRow>>()
+    //             {
+    //                 let consolidated_row = DialogueConsolidatedRow {
+    //                     shift_group: shift_group.clone(),
+    //                     shift: current_shift.shift.clone(),
+    //                     shift_type: "Pickup".to_string(),
+    //                     teacher_name: current_shift.teacher_name.clone(),
+    //                     start_date: current_shift.start_date.clone(),
+    //                     end_date: current_shift.end_date.clone(),
+    //                 };
+
+    //                 consolidated_rows.push(consolidated_row);
+    //             }
+
+    //             for current_shift in second_dialogue_rows
+    //                 .iter()
+    //                 .filter(|row| picked_up_shifts.contains(&&row.shift))
+    //                 .collect::<Vec<&DialogueRow>>()
+    //             {
+    //                 let consolidated_row = DialogueConsolidatedRow {
+    //                     shift_group: shift_group.clone(),
+    //                     shift: current_shift.shift.clone(),
+    //                     shift_type: "Internal Pickup".to_string(),
+    //                     teacher_name: current_shift.teacher_name.clone(),
+    //                     start_date: current_shift.start_date.clone(),
+    //                     end_date: current_shift.end_date.clone(),
+    //                 };
+
+    //                 consolidated_rows.push(consolidated_row);
+    //             }
+
+    //             for current_shift in first_dialogue_rows
+    //                 .iter()
+    //                 .filter(|row| lost_shifts.contains(&&row.shift))
+    //                 .collect::<Vec<&DialogueRow>>()
+    //             {
+    //                 let consolidated_row = DialogueConsolidatedRow {
+    //                     shift_group: shift_group.clone(),
+    //                     shift: current_shift.shift.clone(),
+    //                     shift_type: "Dropped".to_string(),
+    //                     teacher_name: current_shift.teacher_name.clone(),
+    //                     start_date: current_shift.start_date.clone(),
+    //                     end_date: current_shift.end_date.clone(),
+    //                 };
+
+    //                 consolidated_rows.push(consolidated_row);
+    //             }
+
+    //             for current_shift in first_dialogue_rows
+    //                 .iter()
+    //                 .filter(|row| lost_but_picked_up_shifts.contains(&&row.shift))
+    //                 .collect::<Vec<&DialogueRow>>()
+    //             {
+    //                 let consolidated_row = DialogueConsolidatedRow {
+    //                     shift_group: shift_group.clone(),
+    //                     shift: current_shift.shift.clone(),
+    //                     shift_type: "Dropped & Picked Up".to_string(),
+    //                     teacher_name: current_shift.teacher_name.clone(),
+    //                     start_date: current_shift.start_date.clone(),
+    //                     end_date: current_shift.end_date.clone(),
+    //                 };
+
+    //                 consolidated_rows.push(consolidated_row);
+    //             }
+
+    //             for current_shift in second_dialogue_rows
+    //                 .iter()
+    //                 .filter(|row| {
+    //                     !picked_up_shifts.contains(&&row.shift)
+    //                         && !new_shifts.contains(&&row.shift)
+    //                         && !lost_shifts.contains(&&row.shift)
+    //                         && !lost_but_picked_up_shifts.contains(&&row.shift)
+    //                 })
+    //                 .collect::<Vec<&DialogueRow>>()
+    //             {
+    //                 let consolidated_row = DialogueConsolidatedRow {
+    //                     shift_group: shift_group.clone(),
+    //                     shift: current_shift.shift.clone(),
+    //                     shift_type: "-".to_string(),
+    //                     teacher_name: current_shift.teacher_name.clone(),
+    //                     start_date: current_shift.start_date.clone(),
+    //                     end_date: current_shift.end_date.clone(),
+    //                 };
+
+    //                 consolidated_rows.push(consolidated_row);
+    //             }
+    //         }
+    //         None => {}
+    //     }
+    // }
 
     tracing::info!("❕ Consolidated rows: {}", consolidated_rows.len());
 

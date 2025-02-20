@@ -68,6 +68,7 @@ pub async fn get_schedules(
                         FROM schedules
                         LEFT JOIN teachers ON schedules.teacher_id = teachers.id
                         WHERE schedules.shift_group = $1 AND schedules.start_date >= $2 AND schedules.start_date <= $3
+                        ORDER BY teachers.name, schedules.start_date ASC
                         "#,
                         params.shift_group,
                         start_date,
