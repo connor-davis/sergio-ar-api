@@ -758,26 +758,21 @@ async fn consolidate_files(
 
     let lost_but_picked_up_shifts = first_dialogue_rows
         .iter()
+        .filter(|row| second_shifts.contains(&row.shift))
         .filter(|row| {
-            let second_shift = second_shifts.contains(&row.shift);
+            let second_dialogue_row = second_dialogue_rows
+                .iter()
+                .find(|second_dialogue_row| second_dialogue_row.shift == row.shift);
 
-            if second_shift {
-                let second_dialogue_row = second_dialogue_rows
-                    .iter()
-                    .find(|second_dialogue_row| second_dialogue_row.shift == row.shift);
-
-                match second_dialogue_row {
-                    Some(second_dialogue_row) => {
-                        if second_dialogue_row.teacher_name != row.teacher_name {
-                            true
-                        } else {
-                            false
-                        }
+            match second_dialogue_row {
+                Some(second_dialogue_row) => {
+                    if second_dialogue_row.teacher_name != row.teacher_name {
+                        true
+                    } else {
+                        false
                     }
-                    None => false,
                 }
-            } else {
-                false
+                None => false,
             }
         })
         .map(|row| row.shift.clone())
