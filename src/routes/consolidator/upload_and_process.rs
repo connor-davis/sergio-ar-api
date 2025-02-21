@@ -803,32 +803,46 @@ async fn consolidate_files(
                 consolidated_row.shift_type = "Dropped".to_string();
 
                 consolidated_rows.push(consolidated_row);
+
+                continue;
             }
-            false => match is_new {
-                true => {
-                    consolidated_row.shift_type = "Pickup".to_string();
+            false => {}
+        }
 
-                    consolidated_rows.push(consolidated_row);
-                }
-                false => match is_picked_up {
-                    true => {
-                        consolidated_row.shift_type = "Internal Pickup".to_string();
+        match is_new {
+            true => {
+                consolidated_row.shift_type = "Pickup".to_string();
 
-                        consolidated_rows.push(consolidated_row);
-                    }
-                    false => match is_lost_but_picked_up {
-                        true => {
-                            consolidated_row.shift_type = "Dropped & Picked Up".to_string();
+                consolidated_rows.push(consolidated_row);
 
-                            consolidated_rows.push(consolidated_row);
-                        }
-                        false => {
-                            consolidated_rows.push(consolidated_row);
-                        }
-                    },
-                },
-            },
-        };
+                continue;
+            }
+            false => {}
+        }
+
+        match is_picked_up {
+            true => {
+                consolidated_row.shift_type = "Internal Pickup".to_string();
+
+                consolidated_rows.push(consolidated_row);
+
+                continue;
+            }
+            false => {}
+        }
+
+        match is_lost_but_picked_up {
+            true => {
+                consolidated_row.shift_type = "Dropped & Picked Up".to_string();
+
+                consolidated_rows.push(consolidated_row);
+
+                continue;
+            }
+            false => {}
+        }
+
+        consolidated_rows.push(consolidated_row);
     }
 
     // let mut first_dialogue_rows_split: HashMap<String, Vec<DialogueRow>> = HashMap::new();
