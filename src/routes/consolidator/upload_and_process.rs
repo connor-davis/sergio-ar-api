@@ -712,11 +712,11 @@ async fn consolidate_files(
         .map(|row| row.shift.clone())
         .collect::<Vec<String>>();
 
-    let lost_shifts = first_shifts
+    let dropped_shifts = first_shifts
         .iter()
         .filter(|shift| !second_shifts.contains(shift))
         .collect::<Vec<&String>>();
-    let new_shifts = second_shifts
+    let pick_up_shifts = second_shifts
         .iter()
         .filter(|shift| !first_shifts.contains(shift))
         .collect::<Vec<&String>>();
@@ -731,7 +731,7 @@ async fn consolidate_files(
         })
         .collect::<HashMap<String, String>>();
 
-    let picked_up_shifts = second_dialogue_rows
+    let internal_pick_up_shifts = second_dialogue_rows
         .iter()
         .filter(|row| {
             let previous_shift_assignment = previous_shift_teachers.get(&row.shift);
@@ -756,7 +756,7 @@ async fn consolidate_files(
         .map(|row| row.shift.clone())
         .collect::<Vec<String>>();
 
-    let lost_but_picked_up_shifts = first_dialogue_rows
+    let dropped_and_picked_up_shifts = first_dialogue_rows
         .iter()
         .filter(|row| second_shifts.contains(&row.shift))
         .filter(|row| {
@@ -779,10 +779,10 @@ async fn consolidate_files(
         .collect::<Vec<String>>();
 
     for current_shift in second_dialogue_rows {
-        let is_lost = lost_shifts.contains(&&current_shift.shift);
-        let is_new = new_shifts.contains(&&current_shift.shift);
-        let is_picked_up = picked_up_shifts.contains(&&current_shift.shift);
-        let is_lost_but_picked_up = lost_but_picked_up_shifts.contains(&&current_shift.shift);
+        let is_dropped = dropped_shifts.contains(&&current_shift.shift);
+        let is_pick_up = pick_up_shifts.contains(&&current_shift.shift);
+        let is_internal_pick_up = internal_pick_up_shifts.contains(&&current_shift.shift);
+        let is_dropped_and_picked_up = dropped_and_picked_up_shifts.contains(&&current_shift.shift);
 
         let mut consolidated_row = DialogueConsolidatedRow {
             shift_group: current_shift.shift_group.clone(),
@@ -793,7 +793,7 @@ async fn consolidate_files(
             end_date: current_shift.end_date.clone(),
         };
 
-        match is_lost {
+        match is_dropped {
             true => {
                 consolidated_row.shift_type = "Dropped".to_string();
 
@@ -804,7 +804,7 @@ async fn consolidate_files(
             false => {}
         }
 
-        match is_new {
+        match is_pick_up {
             true => {
                 consolidated_row.shift_type = "Pickup".to_string();
 
@@ -815,7 +815,7 @@ async fn consolidate_files(
             false => {}
         }
 
-        match is_picked_up {
+        match is_internal_pick_up {
             true => {
                 consolidated_row.shift_type = "Internal Pickup".to_string();
 
@@ -826,7 +826,7 @@ async fn consolidate_files(
             false => {}
         }
 
-        match is_lost_but_picked_up {
+        match is_dropped_and_picked_up {
             true => {
                 consolidated_row.shift_type = "Dropped & Picked Up".to_string();
 
