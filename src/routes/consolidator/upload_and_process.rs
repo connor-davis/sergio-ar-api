@@ -721,7 +721,21 @@ async fn consolidate_files(
         .filter(|shift| !first_shifts.contains(shift))
         .collect::<Vec<&String>>();
 
-    let previous_shift_teachers = first_dialogue_rows
+    let undecided_first_dialog_rows = first_dialogue_rows
+        .iter()
+        .filter(|row| {
+            !dropped_shifts.contains(&&row.shift) && !pick_up_shifts.contains(&&row.shift)
+        })
+        .collect::<Vec<&DialogueRow>>();
+
+    let undecided_second_dialog_rows = second_dialogue_rows
+        .iter()
+        .filter(|row| {
+            !dropped_shifts.contains(&&row.shift) && !pick_up_shifts.contains(&&row.shift)
+        })
+        .collect::<Vec<&DialogueRow>>();
+
+    let previous_shift_teachers = undecided_first_dialog_rows
         .iter()
         .map(|row| {
             (
@@ -731,52 +745,35 @@ async fn consolidate_files(
         })
         .collect::<HashMap<String, String>>();
 
-    let internal_pick_up_shifts = second_dialogue_rows
-        .iter()
-        .filter(|row| {
-            let previous_shift_assignment = previous_shift_teachers.get(&row.shift);
+    let mut internal_pick_up_shifts: Vec<String> = vec![];
+    let mut dropped_and_picked_up_shifts: Vec<String> = vec![];
 
-            match previous_shift_assignment {
-                Some(previous_shift_assignment) => {
-                    let shift_assignment_split =
-                        previous_shift_assignment.split(":").collect::<Vec<_>>();
+    for second_dialogue_row in undecided_second_dialog_rows {
+        let previous_shift_assignment = previous_shift_teachers.get(&second_dialogue_row.shift);
 
-                    let shift_teacher = shift_assignment_split[0];
-                    let shift_group = shift_assignment_split[1];
+        match previous_shift_assignment {
+            Some(previous_shift_assignment) => {
+                let shift_assignment_split =
+                    previous_shift_assignment.split(":").collect::<Vec<_>>();
 
-                    if shift_teacher != row.teacher_name && shift_group == row.shift_group {
-                        true
-                    } else {
-                        false
-                    }
+                let shift_teacher = shift_assignment_split[0];
+                let shift_group = shift_assignment_split[1];
+
+                if shift_teacher != second_dialogue_row.teacher_name
+                    && shift_group == second_dialogue_row.shift_group
+                {
+                    internal_pick_up_shifts.push(second_dialogue_row.shift.clone());
                 }
-                None => false,
-            }
-        })
-        .map(|row| row.shift.clone())
-        .collect::<Vec<String>>();
 
-    let dropped_and_picked_up_shifts = first_dialogue_rows
-        .iter()
-        .filter(|row| second_shifts.contains(&row.shift))
-        .filter(|row| {
-            let second_dialogue_row = second_dialogue_rows
-                .iter()
-                .find(|second_dialogue_row| second_dialogue_row.shift == row.shift);
-
-            match second_dialogue_row {
-                Some(second_dialogue_row) => {
-                    if second_dialogue_row.teacher_name != row.teacher_name {
-                        true
-                    } else {
-                        false
-                    }
+                if shift_teacher != second_dialogue_row.teacher_name
+                    && shift_group != second_dialogue_row.shift_group
+                {
+                    dropped_and_picked_up_shifts.push(second_dialogue_row.shift.clone());
                 }
-                None => false,
             }
-        })
-        .map(|row| row.shift.clone())
-        .collect::<Vec<String>>();
+            None => {}
+        }
+    }
 
     for current_shift in second_dialogue_rows {
         let is_dropped = dropped_shifts.contains(&&current_shift.shift);
