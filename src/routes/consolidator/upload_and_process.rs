@@ -43,6 +43,14 @@ pub struct DialogueConsolidatedRow {
     pub end_date: String,
 }
 
+// #[derive(Debug, Clone, Deserialize, Serialize)]
+// pub struct InternalPickup {
+//     pub shift: String,
+//     pub initial_teacher: String,
+//     pub new_teacher: String,
+//     pub shift_group: String,
+// }
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct InvoicingRow {
     pub teacher_name: String,
@@ -712,6 +720,63 @@ async fn consolidate_files(
         .map(|row| row.shift.clone())
         .collect::<Vec<String>>();
 
+    // let taught_shifts = first_shifts
+    //     .iter()
+    //     .filter(|shift| {
+    //         let is_in_second_shifts = second_shifts.contains(shift);
+
+    //         let shift_teacher = first_dialogue_rows
+    //             .iter()
+    //             .find(|row| row.shift == **shift)
+    //             .unwrap()
+    //             .teacher_name
+    //             .clone();
+
+    //         let second_shift_teacher = second_dialogue_rows
+    //             .iter()
+    //             .find(|row| row.shift == **shift)
+    //             .unwrap()
+    //             .teacher_name
+    //             .clone();
+
+    //         let is_same_teacher = shift_teacher == second_shift_teacher;
+
+    //         is_in_second_shifts && is_same_teacher
+    //     })
+    //     .collect::<Vec<&String>>();
+
+    // let dropped_shifts = first_shifts
+    //     .iter()
+    //     .filter(|shift| !second_shifts.contains(shift))
+    //     .collect::<Vec<&String>>();
+
+    // let mut internal_pickups: Vec<InternalPickup> = vec![];
+
+    // for first_dialogue_row in first_dialogue_rows {
+    //     let is_in_second_shifts = second_shifts.contains(&first_dialogue_row.shift);
+
+    //     if is_in_second_shifts {
+    //         let second_dialogue_row = second_dialogue_rows
+    //             .iter()
+    //             .find(|row| row.shift == first_dialogue_row.shift)
+    //             .unwrap();
+
+    //         let shift_teacher = first_dialogue_row.teacher_name.clone();
+    //         let second_shift_teacher = second_dialogue_row.teacher_name.clone();
+
+    //         if shift_teacher != second_shift_teacher {
+    //             let internal_pickup = InternalPickup {
+    //                 shift: first_dialogue_row.shift.clone(),
+    //                 initial_teacher: shift_teacher,
+    //                 new_teacher: second_shift_teacher,
+    //                 shift_group: first_dialogue_row.shift_group.clone(),
+    //             };
+
+    //             internal_pickups.push(internal_pickup);
+    //         }
+    //     }
+    // }
+
     let dropped_shifts = first_shifts
         .iter()
         .filter(|shift| !second_shifts.contains(shift))
@@ -775,19 +840,20 @@ async fn consolidate_files(
         }
     }
 
-    for current_shift in second_dialogue_rows {
-        let is_dropped = dropped_shifts.contains(&&current_shift.shift);
-        let is_pick_up = pick_up_shifts.contains(&&current_shift.shift);
-        let is_internal_pick_up = internal_pick_up_shifts.contains(&&current_shift.shift);
-        let is_dropped_and_picked_up = dropped_and_picked_up_shifts.contains(&&current_shift.shift);
+    for current_dialogue_row in first_dialogue_rows {
+        let is_dropped = dropped_shifts.contains(&&current_dialogue_row.shift);
+        let is_pick_up = pick_up_shifts.contains(&&current_dialogue_row.shift);
+        let is_internal_pick_up = internal_pick_up_shifts.contains(&&current_dialogue_row.shift);
+        let is_dropped_and_picked_up =
+            dropped_and_picked_up_shifts.contains(&&current_dialogue_row.shift);
 
         let mut consolidated_row = DialogueConsolidatedRow {
-            shift_group: current_shift.shift_group.clone(),
-            shift: current_shift.shift.clone(),
+            shift_group: current_dialogue_row.shift_group.clone(),
+            shift: current_dialogue_row.shift.clone(),
             shift_type: "-".to_string(),
-            teacher_name: current_shift.teacher_name.clone(),
-            start_date: current_shift.start_date.clone(),
-            end_date: current_shift.end_date.clone(),
+            teacher_name: current_dialogue_row.teacher_name.clone(),
+            start_date: current_dialogue_row.start_date.clone(),
+            end_date: current_dialogue_row.end_date.clone(),
         };
 
         match is_dropped {
