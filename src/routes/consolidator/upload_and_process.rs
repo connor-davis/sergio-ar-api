@@ -842,11 +842,7 @@ async fn consolidate_files(
 
     for current_dialogue_row in first_dialogue_rows {
         let is_dropped = dropped_shifts.contains(&&current_dialogue_row.shift);
-        let is_pick_up = pick_up_shifts.contains(&&current_dialogue_row.shift);
-        let is_internal_pick_up = internal_pick_up_shifts.contains(&&current_dialogue_row.shift);
-        let is_dropped_and_picked_up =
-            dropped_and_picked_up_shifts.contains(&&current_dialogue_row.shift);
-
+       
         let mut consolidated_row = DialogueConsolidatedRow {
             shift_group: current_dialogue_row.shift_group.clone(),
             shift: current_dialogue_row.shift.clone(),
@@ -861,11 +857,25 @@ async fn consolidate_files(
                 consolidated_row.shift_type = "Dropped".to_string();
 
                 consolidated_rows.push(consolidated_row);
-
-                continue;
             }
             false => {}
         }
+    }
+
+    for current_dialogue_row in second_dialogue_rows {
+        let is_pick_up = pick_up_shifts.contains(&&current_dialogue_row.shift);
+        let is_internal_pick_up = internal_pick_up_shifts.contains(&&current_dialogue_row.shift);
+        let is_dropped_and_picked_up =
+            dropped_and_picked_up_shifts.contains(&&current_dialogue_row.shift);
+
+        let mut consolidated_row = DialogueConsolidatedRow {
+            shift_group: current_dialogue_row.shift_group.clone(),
+            shift: current_dialogue_row.shift.clone(),
+            shift_type: "-".to_string(),
+            teacher_name: current_dialogue_row.teacher_name.clone(),
+            start_date: current_dialogue_row.start_date.clone(),
+            end_date: current_dialogue_row.end_date.clone(),
+        };
 
         match is_pick_up {
             true => {
