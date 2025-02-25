@@ -19,10 +19,6 @@ pub async fn create_router(app_state: AppState) -> Router {
             post(consolidator::upload_and_process::upload_and_process),
         )
         .route(
-            "/generate-efficiency-report",
-            get(efficiency::generate_efficiency_report::generate_efficiency_report),
-        )
-        .route(
             "/generate-consolidated-report",
             get(efficiency::generate_consolidated_report::generate_consolidated_report),
         )

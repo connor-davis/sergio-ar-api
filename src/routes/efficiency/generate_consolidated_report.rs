@@ -96,7 +96,7 @@ pub async fn generate_consolidated_report(
     });
 
     let mut consolidated_report_csv =
-        "Teacher,Shift,Shift Type,Start Date,End Date,,,,Teacher,Scheduled,Picked Up,Dropped,Internal Pickups\n"
+        "Teacher,Shift,Shift Type,Start Date,End Date,,,,Teacher,Scheduled,Picked Up,Dropped,Dropped & Picked Up,Internal Pickups\n"
             .to_string();
 
     let mut csv_lines: Vec<String> = Vec::new();
@@ -123,6 +123,7 @@ pub async fn generate_consolidated_report(
     let mut total_picked_up = 0;
     let mut total_dropped = 0;
     let mut total_internal_picked_up = 0;
+    let mut total_dropped_and_picked_up = 0;
 
     table_teachers.sort();
 
@@ -131,6 +132,7 @@ pub async fn generate_consolidated_report(
         let mut picked_up = 0;
         let mut dropped = 0;
         let mut internal_picked_up = 0;
+        let mut dropped_and_picked_up = 0;
 
         for schedule in schedules_for_range
             .clone()
@@ -143,7 +145,7 @@ pub async fn generate_consolidated_report(
             match schedule.shift_type.as_str() {
                 "Pickup" => picked_up += 1,
                 "Internal Pickup" => internal_picked_up += 1,
-                "Dropped & Picked Up" => dropped += 1,
+                "Dropped & Picked Up" => dropped_and_picked_up += 1,
                 "Dropped" => dropped += 1,
                 _ => {}
             }
@@ -154,8 +156,8 @@ pub async fn generate_consolidated_report(
         let mut new_line = initial_line.replace("\n", "");
 
         new_line.push_str(&format!(
-            "{},{},{},{},{}\n",
-            teacher, scheduled, picked_up, dropped, internal_picked_up
+            "{},{},{},{},{},{}\n",
+            teacher, scheduled, picked_up, dropped, dropped_and_picked_up, internal_picked_up
         ));
 
         csv_lines[current_teacher] = new_line;
@@ -164,6 +166,7 @@ pub async fn generate_consolidated_report(
         total_picked_up += picked_up;
         total_dropped += dropped;
         total_internal_picked_up += internal_picked_up;
+        total_dropped_and_picked_up += dropped_and_picked_up;
 
         current_teacher += 1;
     }
@@ -173,8 +176,12 @@ pub async fn generate_consolidated_report(
     let mut new_line = initial_line.replace("\n", "");
 
     let total_line = format!(
-        "Total,{},{},{},{}\n",
-        total_scheduled, total_picked_up, total_dropped, total_internal_picked_up
+        "Total,{},{},{},{},{}\n",
+        total_scheduled,
+        total_picked_up,
+        total_dropped,
+        total_dropped_and_picked_up,
+        total_internal_picked_up
     );
 
     new_line.push_str(&total_line);
