@@ -180,7 +180,7 @@ pub async fn generate_consolidated_report(
         total_scheduled,
         total_picked_up,
         total_dropped,
-        total_dropped_and_picked_up,
+        total_dropped_and_picked_up + total_internal_picked_up,
         total_internal_picked_up
     );
 
