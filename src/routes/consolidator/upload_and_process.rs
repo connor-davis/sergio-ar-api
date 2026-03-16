@@ -421,19 +421,27 @@ async fn consolidate_files(
     let mut updated_invoices = 0;
 
     for invoicing_row in invoicing_rows {
+        let InvoicingRow {
+            teacher_name,
+            eligible,
+            activity_start,
+            activity_end,
+            shift,
+        } = invoicing_row;
+
         // See if the invoice row already exists
-        let existing_invoice_row = sqlx::query!(
+        let existing_invoice_row = sqlx::query_scalar::<_, i32>(
             r#"
                 SELECT
                     id
                 FROM invoices
                 WHERE teacher_name = $1 AND shift = $2 AND activity_start = $3 AND activity_end = $4
-            "#,
-            invoicing_row.teacher_name,
-            invoicing_row.shift,
-            invoicing_row.activity_start,
-            invoicing_row.activity_end
+            "#
         )
+        .bind(&teacher_name)
+        .bind(&shift)
+        .bind(activity_start)
+        .bind(activity_end)
         .fetch_optional(&app_state.db)
         .await
         .map_err(|error| {
@@ -449,17 +457,17 @@ async fn consolidate_files(
 
         match existing_invoice_row {
             Ok(existing_invoice_row) => match existing_invoice_row {
-                Some(existing_invoice_row) => {
-                    let update_result = sqlx::query!(
+                Some(existing_invoice_id) => {
+                    let update_result = sqlx::query(
                             r#"
                                 UPDATE invoices
                                 SET
                                     eligible = $1
                                 WHERE id = $2
-                            "#,
-                            invoicing_row.eligible,
-                            existing_invoice_row.id
+                            "#
                         )
+                        .bind(eligible)
+                        .bind(existing_invoice_id)
                         .execute(&app_state.db)
                         .await
                         .map_err(|error| {
@@ -485,7 +493,7 @@ async fn consolidate_files(
                     }
                 }
                 None => {
-                    let insert_result = sqlx::query!(
+                    let insert_result = sqlx::query(
                             r#"
                                 INSERT INTO invoices (
                                     teacher_name,
@@ -501,13 +509,13 @@ async fn consolidate_files(
                                     $4,
                                     $5
                                 )
-                            "#,
-                            invoicing_row.teacher_name,
-                            invoicing_row.eligible,
-                            invoicing_row.activity_start,
-                            invoicing_row.activity_end,
-                            invoicing_row.shift
+                            "#
                         )
+                        .bind(&teacher_name)
+                        .bind(eligible)
+                        .bind(activity_start)
+                        .bind(activity_end)
+                        .bind(&shift)
                         .execute(&app_state.db)
                         .await
                         .map_err(|error| {
@@ -1085,7 +1093,8 @@ async fn consolidate_files(
         let start_date = NaiveDateTime::parse_from_str(&start_date, "%d/%m/%Y %I:%M %p").unwrap();
         let end_date = NaiveDateTime::parse_from_str(&end_date, "%d/%m/%Y %I:%M %p").unwrap();
 
-        let teacher_found = sqlx::query!("SELECT * FROM teachers WHERE name = $1", teacher_name)
+        let teacher_found = sqlx::query_scalar::<_, i32>("SELECT id FROM teachers WHERE name = $1")
+            .bind(&teacher_name)
             .fetch_optional(&app_state.db)
             .await
             .map_err(|_| {
@@ -1095,16 +1104,16 @@ async fn consolidate_files(
             })?;
 
         let teacher_found = match teacher_found {
-            Some(teacher) => {
+            Some(teacher_id) => {
                 skipped_teachers += 1;
 
-                teacher.id
+                teacher_id
             }
             None => {
-                let insert_teacher_result = sqlx::query!(
-                    "INSERT INTO teachers (name) VALUES ($1) RETURNING id",
-                    teacher_name
+                let insert_teacher_id = sqlx::query_scalar::<_, i32>(
+                    "INSERT INTO teachers (name) VALUES ($1) RETURNING id"
                 )
+                .bind(&teacher_name)
                 .fetch_one(&app_state.db)
                 .await
                 .map_err(|_| {
@@ -1115,19 +1124,19 @@ async fn consolidate_files(
 
                 new_teachers += 1;
 
-                insert_teacher_result.id
+                insert_teacher_id
             }
         };
 
-        let schedule_found = sqlx::query!(
-            "SELECT * FROM schedules WHERE teacher_id = $1 AND start_date = $2 AND end_date = $3 AND shift = $4 AND shift_type = $5 AND shift_group = $6",
-            teacher_found,
-            start_date,
-            end_date,
-            shift,
-            shift_type,
-            shift_group
+        let schedule_found = sqlx::query_scalar::<_, i32>(
+            "SELECT id FROM schedules WHERE teacher_id = $1 AND start_date = $2 AND end_date = $3 AND shift = $4 AND shift_type = $5 AND shift_group = $6"
         )
+        .bind(teacher_found)
+        .bind(start_date)
+        .bind(end_date)
+        .bind(&shift)
+        .bind(&shift_type)
+        .bind(&shift_group)
         .fetch_optional(&app_state.db)
         .await
         .map_err(|_| {
@@ -1141,15 +1150,15 @@ async fn consolidate_files(
                 skipped_shifts += 1;
             }
             None => {
-                sqlx::query!(
-                    "INSERT INTO schedules (teacher_id, start_date, end_date, shift, shift_type, shift_group) VALUES ($1, $2, $3, $4, $5, $6)",
-                    teacher_found,
-                    start_date,
-                    end_date,
-                    shift,
-                    shift_type,
-                    shift_group,
+                sqlx::query(
+                    "INSERT INTO schedules (teacher_id, start_date, end_date, shift, shift_type, shift_group) VALUES ($1, $2, $3, $4, $5, $6)"
                 )
+                .bind(teacher_found)
+                .bind(start_date)
+                .bind(end_date)
+                .bind(&shift)
+                .bind(&shift_type)
+                .bind(&shift_group)
                 .execute(&app_state.db)
                 .await
                 .map_err(|_| {

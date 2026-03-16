@@ -1,12 +1,13 @@
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 
 use crate::AppState;
 
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde_json::{json, Value};
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, FromRow)]
 pub struct ShiftGroup {
     pub shift_group: String,
 }
@@ -14,12 +15,11 @@ pub struct ShiftGroup {
 pub async fn get_shift_groups(
     State(app_state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let shift_groups = sqlx::query_as!(
-        ShiftGroup,
+    let shift_groups = sqlx::query_as::<_, ShiftGroup>(
         r#"
         SELECT DISTINCT shift_group
         FROM schedules
-        "#,
+        "#
     )
     .fetch_all(&app_state.db)
     .await

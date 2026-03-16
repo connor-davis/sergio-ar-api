@@ -7,6 +7,7 @@ use axum::{
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sqlx::FromRow;
 
 use crate::AppState;
 
@@ -17,7 +18,7 @@ pub struct GetSchedulesParams {
     pub shift_group: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, FromRow)]
 pub struct Schedule {
     pub id: i32,
     pub start_date: NaiveDateTime,
@@ -54,8 +55,7 @@ pub async fn get_schedules(
 
             match end_date {
                 Ok(end_date) => {
-                    let schedules = sqlx::query_as!(
-                        Schedule,
+                    let schedules = sqlx::query_as::<_, Schedule>(
                         r#"
                         SELECT
                             schedules.id,
@@ -69,11 +69,11 @@ pub async fn get_schedules(
                         LEFT JOIN teachers ON schedules.teacher_id = teachers.id
                         WHERE schedules.shift_group = $1 AND schedules.start_date >= $2 AND schedules.start_date <= $3
                         ORDER BY teachers.name, schedules.start_date ASC
-                        "#,
-                        params.shift_group,
-                        start_date,
-                        end_date
+                        "#
                     )
+                    .bind(&params.shift_group)
+                    .bind(start_date)
+                    .bind(end_date)
                     .fetch_all(&app_state.db)
                     .await
                     .map_err(|e| {

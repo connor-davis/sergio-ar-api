@@ -8,6 +8,7 @@ use axum::{
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sqlx::FromRow;
 
 use crate::AppState;
 
@@ -18,7 +19,7 @@ pub struct ConsolidatedReportParams {
     pub shift_group: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, FromRow)]
 pub struct Schedule {
     pub id: i32,
     pub start_date: NaiveDateTime,
@@ -46,8 +47,7 @@ pub async fn generate_consolidated_report(
         NaiveTime::parse_from_str("23:59:59", "%H:%M:%S").unwrap(),
     );
 
-    let mut schedules_for_range = sqlx::query_as!(
-        Schedule,
+    let mut schedules_for_range = sqlx::query_as::<_, Schedule>(
         r#"
             SELECT
                 schedules.id as id,
@@ -60,11 +60,11 @@ pub async fn generate_consolidated_report(
             FROM schedules
             LEFT JOIN teachers ON schedules.teacher_id = teachers.id
             WHERE schedules.start_date >= $1 AND schedules.end_date <= $2 AND schedules.shift_group = $3
-        "#,
-        start_date,
-        end_date,
-        shift_group
+        "#
     )
+    .bind(start_date)
+    .bind(end_date)
+    .bind(&shift_group)
     .fetch_all(&app_state.db)
     .await
     .map_err(|error| {
@@ -171,22 +171,33 @@ pub async fn generate_consolidated_report(
         current_teacher += 1;
     }
 
-    let initial_line = csv_lines[current_teacher].clone();
+    if current_teacher < csv_lines.len() {
+        let initial_line = csv_lines[current_teacher].clone();
 
-    let mut new_line = initial_line.replace("\n", "");
+        let mut new_line = initial_line.replace("\n", "");
 
-    let total_line = format!(
-        "Total,{},{},{},{},{}\n",
-        total_scheduled,
-        total_picked_up,
-        total_dropped,
-        total_dropped_and_picked_up + total_internal_picked_up,
-        total_internal_picked_up
-    );
+        let total_line = format!(
+            "Total,{},{},{},{},{}\n",
+            total_scheduled,
+            total_picked_up,
+            total_dropped,
+            total_dropped_and_picked_up + total_internal_picked_up,
+            total_internal_picked_up
+        );
 
-    new_line.push_str(&total_line);
+        new_line.push_str(&total_line);
 
-    csv_lines[current_teacher] = new_line;
+        csv_lines[current_teacher] = new_line;
+    } else {
+        csv_lines.push(format!(
+            ",,,,,,,,Total,{},{},{},{},{}\n",
+            total_scheduled,
+            total_picked_up,
+            total_dropped,
+            total_dropped_and_picked_up + total_internal_picked_up,
+            total_internal_picked_up
+        ));
+    }
 
     for line in csv_lines {
         consolidated_report_csv.push_str(&line);
