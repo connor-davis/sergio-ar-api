@@ -7,7 +7,6 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use calamine::{open_workbook, Reader, Xlsx};
 use chrono::{Datelike, NaiveDateTime};
 use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
@@ -43,6 +42,20 @@ pub struct DialogueConsolidatedRow {
     pub end_date: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct DialogueCsvRow {
+    #[serde(rename = "Start")]
+    start: String,
+    #[serde(rename = "Finish")]
+    finish: String,
+    #[serde(rename = "Shift: Shift Number")]
+    shift: String,
+    #[serde(rename = "Resource: Shift Group")]
+    shift_group: String,
+    #[serde(rename = "Resource: Resource Name")]
+    teacher_name: String,
+}
+
 // #[derive(Debug, Clone, Deserialize, Serialize)]
 // pub struct InternalPickup {
 //     pub shift: String,
@@ -58,6 +71,57 @@ pub struct InvoicingRow {
     pub activity_start: NaiveDateTime,
     pub activity_end: NaiveDateTime,
     pub shift: String,
+}
+
+fn parse_process_date(process_date: &str) -> Result<NaiveDateTime, Error> {
+    let process_date_split = process_date.split("-").collect::<Vec<_>>();
+    let process_date_day = process_date_split[2];
+    let process_date_month = process_date_split[1];
+    let process_date_year = process_date_split[0];
+
+    NaiveDateTime::parse_from_str(
+        &format!("{}/{}/{} 00:00:00", process_date_day, process_date_month, process_date_year),
+        "%d/%m/%Y %H:%M:%S",
+    )
+    .map_err(Error::from)
+}
+
+fn parse_dialogue_datetime(value: &str) -> Result<NaiveDateTime, Error> {
+    NaiveDateTime::parse_from_str(value.trim(), "%m/%d/%Y %I:%M %p").map_err(Error::from)
+}
+
+fn is_same_day(left: NaiveDateTime, right: NaiveDateTime) -> bool {
+    left.day() == right.day() && left.month() == right.month() && left.year() == right.year()
+}
+
+fn load_dialogue_rows_from_csv(
+    file_path: &str,
+    process_date: NaiveDateTime,
+) -> Result<Vec<DialogueRow>, Error> {
+    let mut reader = ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .from_path(file_path)?;
+
+    let mut rows = Vec::new();
+
+    for record in reader.deserialize::<DialogueCsvRow>() {
+        let record = record?;
+
+        let start_date = parse_dialogue_datetime(&record.start)?;
+        let end_date = parse_dialogue_datetime(&record.finish)?;
+
+        if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
+            rows.push(DialogueRow {
+                shift_group: record.shift_group,
+                shift: record.shift,
+                teacher_name: record.teacher_name,
+                start_date: record.start,
+                end_date: record.finish,
+            });
+        }
+    }
+
+    Ok(rows)
 }
 
 pub async fn upload_and_process(
@@ -173,37 +237,11 @@ async fn consolidate_files(
     app_state: AppState,
     process_date: String,
 ) -> Result<impl IntoResponse, Error> {
-    let first_dialogue_file_path = format!("temp/{}/{}", process_date, "dialogue-1.xlsx");
-    let second_dialogue_file_path = format!("temp/{}/{}", process_date, "dialogue-2.xlsx");
+    let first_dialogue_file_path = format!("temp/{}/{}", process_date, "dialogue-1.csv");
+    let second_dialogue_file_path = format!("temp/{}/{}", process_date, "dialogue-2.csv");
     let invoicing_file_path = format!("temp/{}/{}", process_date, "invoicing-report.csv");
 
-    let process_date_split = process_date.split("-").collect::<Vec<_>>();
-    let process_date_day = process_date_split[2];
-    let process_date_month = process_date_split[1];
-    let process_date_year = process_date_split[0];
-
-    let process_date = format!(
-        "{}/{}/{}",
-        process_date_day, process_date_month, process_date_year
-    );
-
-    let process_date =
-        NaiveDateTime::parse_from_str(&format!("{} 00:00:00", process_date), "%d/%m/%Y %H:%M:%S")
-            .unwrap();
-
-    let mut first_dialogue_workbook: Xlsx<_> =
-        open_workbook(first_dialogue_file_path).expect("Cannot open first dialogue file.");
-
-    let first_sheet = first_dialogue_workbook
-        .worksheet_range(first_dialogue_workbook.sheet_names()[0].as_str())
-        .expect("Cannot open first dialogue sheet.");
-
-    let mut second_dialogue_workbook: Xlsx<_> =
-        open_workbook(second_dialogue_file_path).expect("Cannot open second dialogue file.");
-
-    let second_sheet = second_dialogue_workbook
-        .worksheet_range(second_dialogue_workbook.sheet_names()[0].as_str())
-        .expect("Cannot open second dialogue sheet.");
+    let process_date = parse_process_date(&process_date)?;
 
     tracing::info!("✅ Successfully opened all dialogue files.");
 
@@ -252,217 +290,16 @@ async fn consolidate_files(
 
     tracing::info!("❕ Consolidating files...");
 
-    let mut first_dialogue_rows: Vec<DialogueRow> = Vec::new();
-
-    let mut shift_group_temp = String::new();
-    let mut shift_temp = String::new();
-    let mut teacher_name_temp = String::new();
-    let mut start_date_temp = String::new();
-    let mut end_date_temp = String::new();
-
     // Consolidate first dialogue file
     tracing::info!("❕ Mapping first dialogue file...");
-
-    let file_rows = first_sheet.rows().enumerate().collect::<Vec<_>>();
-    let file_rows = file_rows.iter().skip(10).collect::<Vec<_>>();
-
-    let mut current_row = 0;
-    let total_rows = file_rows.len();
-
-    for (_, row) in file_rows {
-        current_row += 1;
-
-        if current_row == total_rows - 4 {
-            break;
-        }
-
-        let row = row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>();
-
-        let shift_group = &row[0];
-
-        if shift_group.len() > 0 {
-            shift_group_temp = shift_group.to_string();
-        }
-
-        let shift = &row[6];
-
-        if shift.len() > 0 {
-            shift_temp = shift.to_string();
-        }
-
-        let teacher_name = &row[1];
-
-        if teacher_name.len() > 0 {
-            teacher_name_temp = teacher_name.to_string();
-        }
-
-        let start_date = &row[4];
-
-        if start_date.len() > 0 {
-            start_date_temp = start_date.to_string();
-        }
-
-        let end_date = &row[5];
-
-        if end_date.len() > 0 {
-            end_date_temp = end_date.to_string();
-        }
-
-        let dialogue_row = DialogueRow {
-            shift_group: shift_group_temp.to_string(),
-            shift: shift_temp.to_string(),
-            teacher_name: teacher_name_temp.to_string(),
-            start_date: start_date_temp.to_string(),
-            end_date: end_date_temp.to_string(),
-        };
-
-        let dialogue_row_start_date = dialogue_row.start_date.split(" ").collect::<Vec<_>>()[0];
-        let dialogue_row_start_day = dialogue_row_start_date.split("/").collect::<Vec<_>>()[1];
-        let dialogue_row_start_month = dialogue_row_start_date.split("/").collect::<Vec<_>>()[0];
-        let dialogue_row_start_year = dialogue_row_start_date.split("/").collect::<Vec<_>>()[2];
-
-        let dialogue_row_start_date = format!(
-            "{}/{}/{}",
-            dialogue_row_start_day, dialogue_row_start_month, dialogue_row_start_year
-        );
-
-        let dialogue_row_start_date = NaiveDateTime::parse_from_str(
-            &format!("{} 00:00:00", dialogue_row_start_date),
-            "%d/%m/%Y %H:%M:%S",
-        )
-        .unwrap();
-
-        let dialogue_row_end_date = dialogue_row.end_date.split(" ").collect::<Vec<_>>()[0];
-        let dialogue_row_end_day = dialogue_row_end_date.split("/").collect::<Vec<_>>()[1];
-        let dialogue_row_end_month = dialogue_row_end_date.split("/").collect::<Vec<_>>()[0];
-        let dialogue_row_end_year = dialogue_row_end_date.split("/").collect::<Vec<_>>()[2];
-
-        let dialogue_row_end_date = format!(
-            "{}/{}/{}",
-            dialogue_row_end_day, dialogue_row_end_month, dialogue_row_end_year
-        );
-
-        let dialogue_row_end_date = NaiveDateTime::parse_from_str(
-            &format!("{} 00:00:00", dialogue_row_end_date),
-            "%d/%m/%Y %H:%M:%S",
-        )
-        .unwrap();
-
-        // Check if the dialogue row date is equal to the process date or if the day and year are the same but the month is less than the process date month
-        if dialogue_row_start_date.day() == process_date.day()
-            && dialogue_row_start_date.month() == process_date.month()
-            && dialogue_row_start_date.year() == process_date.year()
-            || dialogue_row_end_date.day() == process_date.day()
-                && dialogue_row_end_date.month() == process_date.month()
-                && dialogue_row_end_date.year() == process_date.year()
-        {
-            first_dialogue_rows.push(dialogue_row);
-        }
-    }
+    let first_dialogue_rows = load_dialogue_rows_from_csv(&first_dialogue_file_path, process_date)?;
 
     tracing::info!("✅ Successfully mapped first dialogue file.");
 
     // Consolidate second dialogue file
     tracing::info!("❕ Mapping second dialogue file...");
-
-    let mut second_dialogue_rows: Vec<DialogueRow> = Vec::new();
-
-    let file_rows = second_sheet.rows().enumerate().collect::<Vec<_>>();
-    let file_rows = file_rows.iter().skip(10).collect::<Vec<_>>();
-
-    let mut current_row = 0;
-    let total_rows = file_rows.len();
-
-    for (_, row) in file_rows {
-        current_row += 1;
-
-        if current_row == total_rows - 4 {
-            break;
-        }
-
-        let row = row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>();
-
-        let shift_group = &row[0];
-
-        if shift_group.len() > 0 {
-            shift_group_temp = shift_group.to_string();
-        }
-
-        let shift = &row[6];
-
-        if shift.len() > 0 {
-            shift_temp = shift.to_string();
-        }
-
-        let teacher_name = &row[1];
-
-        if teacher_name.len() > 0 {
-            teacher_name_temp = teacher_name.to_string();
-        }
-
-        let start_date = &row[4];
-
-        if start_date.len() > 0 {
-            start_date_temp = start_date.to_string();
-        }
-
-        let end_date = &row[5];
-
-        if end_date.len() > 0 {
-            end_date_temp = end_date.to_string();
-        }
-
-        let dialogue_row = DialogueRow {
-            shift_group: shift_group_temp.to_string(),
-            shift: shift_temp.to_string(),
-            teacher_name: teacher_name_temp.to_string(),
-            start_date: start_date_temp.to_string(),
-            end_date: end_date_temp.to_string(),
-        };
-
-        let dialogue_row_start_date = dialogue_row.start_date.split(" ").collect::<Vec<_>>()[0];
-        let dialogue_row_start_day = dialogue_row_start_date.split("/").collect::<Vec<_>>()[1];
-        let dialogue_row_start_month = dialogue_row_start_date.split("/").collect::<Vec<_>>()[0];
-        let dialogue_row_start_year = dialogue_row_start_date.split("/").collect::<Vec<_>>()[2];
-
-        let dialogue_row_start_date = format!(
-            "{}/{}/{}",
-            dialogue_row_start_day, dialogue_row_start_month, dialogue_row_start_year
-        );
-
-        let dialogue_row_start_date = NaiveDateTime::parse_from_str(
-            &format!("{} 00:00:00", dialogue_row_start_date),
-            "%d/%m/%Y %H:%M:%S",
-        )
-        .unwrap();
-
-        let dialogue_row_end_date = dialogue_row.end_date.split(" ").collect::<Vec<_>>()[0];
-        let dialogue_row_end_day = dialogue_row_end_date.split("/").collect::<Vec<_>>()[1];
-        let dialogue_row_end_month = dialogue_row_end_date.split("/").collect::<Vec<_>>()[0];
-        let dialogue_row_end_year = dialogue_row_end_date.split("/").collect::<Vec<_>>()[2];
-
-        let dialogue_row_end_date = format!(
-            "{}/{}/{}",
-            dialogue_row_end_day, dialogue_row_end_month, dialogue_row_end_year
-        );
-
-        let dialogue_row_end_date = NaiveDateTime::parse_from_str(
-            &format!("{} 00:00:00", dialogue_row_end_date),
-            "%d/%m/%Y %H:%M:%S",
-        )
-        .unwrap();
-
-        // Check if the dialogue row date is equal to the process date or if the day and year are the same but the month is less than the process date month
-        if dialogue_row_start_date.day() == process_date.day()
-            && dialogue_row_start_date.month() == process_date.month()
-            && dialogue_row_start_date.year() == process_date.year()
-            || dialogue_row_end_date.day() == process_date.day()
-                && dialogue_row_end_date.month() == process_date.month()
-                && dialogue_row_end_date.year() == process_date.year()
-        {
-            second_dialogue_rows.push(dialogue_row);
-        }
-    }
+    let second_dialogue_rows =
+        load_dialogue_rows_from_csv(&second_dialogue_file_path, process_date)?;
 
     tracing::info!("✅ Successfully mapped second dialogue file.");
 

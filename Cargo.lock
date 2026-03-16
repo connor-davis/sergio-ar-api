@@ -247,22 +247,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2bd12c1caf447e69cd4528f47f94d203fd2582878ecb9e9465484c4148a8223"
 
 [[package]]
-name = "calamine"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58785077b99914cfa7aa07b7203b1d5eb91efcd7d5ffd0f51a98b95c36112ef4"
-dependencies = [
- "byteorder",
- "chrono",
- "codepage",
- "encoding_rs",
- "log",
- "quick-xml",
- "serde",
- "zip",
-]
-
-[[package]]
 name = "cc"
 version = "1.0.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -290,15 +274,6 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-targets 0.52.0",
-]
-
-[[package]]
-name = "codepage"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b0e9222c0cdf2c6ac27d73f664f9520266fa911c3106329d359f8861cb8bde9"
-dependencies = [
- "encoding_rs",
 ]
 
 [[package]]
@@ -1404,16 +1379,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quick-xml"
-version = "0.31.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1004a344b30a54e2ee58d66a71b32d2db2feb0a31f9a2d302bf0536f15de2a33"
-dependencies = [
- "encoding_rs",
- "memchr",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.36"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1849,7 +1814,6 @@ dependencies = [
  "anyhow",
  "axum",
  "bigdecimal",
- "calamine",
  "chrono",
  "cron",
  "csv",
