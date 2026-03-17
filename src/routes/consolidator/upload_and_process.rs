@@ -358,14 +358,32 @@ async fn consolidate_files(
     app_state: AppState,
     process_date: String,
 ) -> Result<impl IntoResponse, Error> {
-    let invoicing_file_path = format!("temp/{}/{}", process_date, "invoicing-report.csv");
+    let mut invoicing_file_path = format!("temp/{}/{}", process_date, "invoicing-report.csv");
     let dialogue_base_path = format!("temp/{}", process_date);
 
     let process_date = parse_process_date(&process_date)?;
 
     tracing::info!("✅ Successfully opened all dialogue files.");
 
-    let file = File::open(invoicing_file_path)?;
+    if !std::path::Path::new(&invoicing_file_path).exists() {
+         tracing::info!("❕ invoicing-report.csv not found, checking for alternative names");
+         if let Ok(dir) = std::fs::read_dir(&dialogue_base_path) {
+             for entry in dir {
+                 if let Ok(entry) = entry {
+                     let path = entry.path();
+                     if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                         if file_name.starts_with("invoicing-report") {
+                             invoicing_file_path = path.to_str().unwrap().to_string();
+                             tracing::info!("✅ Found invoicing report: {}", invoicing_file_path);
+                             break;
+                         }
+                     }
+                 }
+             }
+         }
+    }
+
+    let file = File::open(&invoicing_file_path)?;
     let mut parser_csv_reader = csv::ReaderBuilder::new().from_reader(file);
 
     let mut data = String::new();
