@@ -7,6 +7,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use calamine::{open_workbook, Reader, Xlsx};
 use chrono::{Datelike, NaiveDateTime};
 use csv::ReaderBuilder;
 use serde::{Deserialize, Serialize};
@@ -124,6 +125,108 @@ fn load_dialogue_rows_from_csv(
     Ok(rows)
 }
 
+fn load_dialogue_rows_from_xlsx(
+    file_path: &str,
+    process_date: NaiveDateTime,
+) -> Result<Vec<DialogueRow>, Error> {
+    let mut workbook: Xlsx<_> =
+        open_workbook(file_path).map_err(|e| anyhow::anyhow!("Cannot open xlsx file: {}", e))?;
+
+    let sheet = workbook
+        .worksheet_range(workbook.sheet_names()[0].as_str())
+        .map_err(|e| anyhow::anyhow!("Cannot open xlsx sheet: {}", e))?;
+
+    let mut rows = Vec::new();
+
+    let mut shift_group_temp = String::new();
+    let mut shift_temp = String::new();
+    let mut teacher_name_temp = String::new();
+    let mut start_date_temp = String::new();
+    let mut end_date_temp = String::new();
+
+    let file_rows = sheet.rows().enumerate().collect::<Vec<_>>();
+    let file_rows = file_rows.iter().skip(10).collect::<Vec<_>>();
+
+    let mut current_row = 0;
+    let total_rows = file_rows.len();
+
+    for (_, row) in file_rows {
+        current_row += 1;
+
+        if current_row == total_rows - 4 {
+            break;
+        }
+
+        let row = row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>();
+
+        let shift_group = &row[0];
+        if !shift_group.is_empty() {
+            shift_group_temp = shift_group.to_string();
+        }
+
+        let shift = &row[6];
+        if !shift.is_empty() {
+            shift_temp = shift.to_string();
+        }
+
+        let teacher_name = &row[1];
+        if !teacher_name.is_empty() {
+            teacher_name_temp = teacher_name.to_string();
+        }
+
+        let start_date = &row[4];
+        if !start_date.is_empty() {
+            start_date_temp = start_date.to_string();
+        }
+
+        let end_date = &row[5];
+        if !end_date.is_empty() {
+            end_date_temp = end_date.to_string();
+        }
+
+        if teacher_name_temp.is_empty() || start_date_temp.is_empty() || end_date_temp.is_empty() {
+            continue;
+        }
+
+        let start_date = parse_dialogue_datetime(&start_date_temp)?;
+        let end_date = parse_dialogue_datetime(&end_date_temp)?;
+
+        if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
+            rows.push(DialogueRow {
+                shift_group: shift_group_temp.clone(),
+                shift: shift_temp.clone(),
+                teacher_name: teacher_name_temp.clone(),
+                start_date: start_date_temp.clone(),
+                end_date: end_date_temp.clone(),
+            });
+        }
+    }
+
+    Ok(rows)
+}
+
+fn load_dialogue_rows(
+    base_path: &str,
+    slot: u8,
+    process_date: NaiveDateTime,
+) -> Result<Vec<DialogueRow>, Error> {
+    let csv_path = format!("{}/dialogue-{}.csv", base_path, slot);
+    let xlsx_path = format!("{}/dialogue-{}.xlsx", base_path, slot);
+
+    if std::path::Path::new(&csv_path).exists() {
+        tracing::info!("📄 Loading dialogue-{} from CSV", slot);
+        load_dialogue_rows_from_csv(&csv_path, process_date)
+    } else if std::path::Path::new(&xlsx_path).exists() {
+        tracing::info!("📄 Loading dialogue-{} from XLSX", slot);
+        load_dialogue_rows_from_xlsx(&xlsx_path, process_date)
+    } else {
+        Err(anyhow::anyhow!(
+            "dialogue-{} file not found (tried .csv and .xlsx)",
+            slot
+        ))
+    }
+}
+
 pub async fn upload_and_process(
     Query(query): Query<UploadAndProcessQuery>,
     State(app_state): State<AppState>,
@@ -237,9 +340,8 @@ async fn consolidate_files(
     app_state: AppState,
     process_date: String,
 ) -> Result<impl IntoResponse, Error> {
-    let first_dialogue_file_path = format!("temp/{}/{}", process_date, "dialogue-1.csv");
-    let second_dialogue_file_path = format!("temp/{}/{}", process_date, "dialogue-2.csv");
     let invoicing_file_path = format!("temp/{}/{}", process_date, "invoicing-report.csv");
+    let dialogue_base_path = format!("temp/{}", process_date);
 
     let process_date = parse_process_date(&process_date)?;
 
@@ -292,14 +394,13 @@ async fn consolidate_files(
 
     // Consolidate first dialogue file
     tracing::info!("❕ Mapping first dialogue file...");
-    let first_dialogue_rows = load_dialogue_rows_from_csv(&first_dialogue_file_path, process_date)?;
+    let first_dialogue_rows = load_dialogue_rows(&dialogue_base_path, 1, process_date)?;
 
     tracing::info!("✅ Successfully mapped first dialogue file.");
 
     // Consolidate second dialogue file
     tracing::info!("❕ Mapping second dialogue file...");
-    let second_dialogue_rows =
-        load_dialogue_rows_from_csv(&second_dialogue_file_path, process_date)?;
+    let second_dialogue_rows = load_dialogue_rows(&dialogue_base_path, 2, process_date)?;
 
     tracing::info!("✅ Successfully mapped second dialogue file.");
 
