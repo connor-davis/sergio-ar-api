@@ -210,34 +210,21 @@ fn load_dialogue_rows(
     slot: u8,
     process_date: NaiveDateTime,
 ) -> Result<Vec<DialogueRow>, Error> {
-    // Look for any file starting with dialogue-{slot} in the directory
-    let entries = std::fs::read_dir(base_path)?;
-    
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_file() {
-            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                if file_name.starts_with(&format!("dialogue-{}", slot)) {
-                    if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
-                        if extension.eq_ignore_ascii_case("csv") {
-                            tracing::info!("📄 Loading {} from CSV", file_name);
-                            return load_dialogue_rows_from_csv(path.to_str().unwrap(), process_date);
-                        } else if extension.eq_ignore_ascii_case("xlsx") {
-                            tracing::info!("📄 Loading {} from XLSX", file_name);
-                            return load_dialogue_rows_from_xlsx(path.to_str().unwrap(), process_date);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let csv_path = format!("{}/dialogue-{}.csv", base_path, slot);
+    let xlsx_path = format!("{}/dialogue-{}.xlsx", base_path, slot);
 
-    Err(anyhow::anyhow!(
-        "dialogue-{} file not found (checked for any file starting with dialogue-{})",
-        slot,
-        slot
-    ))
+    if std::path::Path::new(&csv_path).exists() {
+        tracing::info!("📄 Loading dialogue-{} from CSV", slot);
+        load_dialogue_rows_from_csv(&csv_path, process_date)
+    } else if std::path::Path::new(&xlsx_path).exists() {
+        tracing::info!("📄 Loading dialogue-{} from XLSX", slot);
+        load_dialogue_rows_from_xlsx(&xlsx_path, process_date)
+    } else {
+        Err(anyhow::anyhow!(
+            "dialogue-{} file not found (tried .csv and .xlsx)",
+            slot
+        ))
+    }
 }
 
 pub async fn upload_and_process(
@@ -322,7 +309,21 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
 
     while let Some(field) = multipart.next_field().await.unwrap() {
         let name = field.name().unwrap().to_string();
-        let file_name = field.file_name().unwrap_or(&name).to_string().to_lowercase();
+        let original_filename = field.file_name().unwrap_or(&name).to_string();
+
+        let extension = std::path::Path::new(&original_filename)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("")
+            .to_lowercase();
+
+        let name_lower = name.to_lowercase();
+        let file_name = if !extension.is_empty() && !name_lower.ends_with(&format!(".{}", extension)) {
+            format!("{}.{}", name_lower, extension)
+        } else {
+            name_lower
+        };
+
         let data = field.bytes().await.unwrap();
 
         let file_path = format!("{}/{}", &directory_path, &file_name);
@@ -358,30 +359,12 @@ async fn consolidate_files(
     app_state: AppState,
     process_date: String,
 ) -> Result<impl IntoResponse, Error> {
-    let mut invoicing_file_path = format!("temp/{}/{}", process_date, "invoicing-report.csv");
+    let invoicing_file_path = format!("temp/{}/{}", process_date, "invoicing-report.csv");
     let dialogue_base_path = format!("temp/{}", process_date);
 
     let process_date = parse_process_date(&process_date)?;
 
     tracing::info!("✅ Successfully opened all dialogue files.");
-
-    if !std::path::Path::new(&invoicing_file_path).exists() {
-         tracing::info!("❕ invoicing-report.csv not found, checking for alternative names");
-         if let Ok(dir) = std::fs::read_dir(&dialogue_base_path) {
-             for entry in dir {
-                 if let Ok(entry) = entry {
-                     let path = entry.path();
-                     if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                         if file_name.starts_with("invoicing-report") {
-                             invoicing_file_path = path.to_str().unwrap().to_string();
-                             tracing::info!("✅ Found invoicing report: {}", invoicing_file_path);
-                             break;
-                         }
-                     }
-                 }
-             }
-         }
-    }
 
     let file = File::open(&invoicing_file_path)?;
     let mut parser_csv_reader = csv::ReaderBuilder::new().from_reader(file);
