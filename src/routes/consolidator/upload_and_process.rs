@@ -108,17 +108,19 @@ fn load_dialogue_rows_from_csv(
     for record in reader.deserialize::<DialogueCsvRow>() {
         let record = record?;
 
-        let start_date = parse_dialogue_datetime(&record.start)?;
-        let end_date = parse_dialogue_datetime(&record.finish)?;
+        let start_date_res = parse_dialogue_datetime(&record.start);
+        let end_date_res = parse_dialogue_datetime(&record.finish);
 
-        if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
-            rows.push(DialogueRow {
-                shift_group: record.shift_group,
-                shift: record.shift,
-                teacher_name: record.teacher_name,
-                start_date: record.start,
-                end_date: record.finish,
-            });
+        if let (Ok(start_date), Ok(end_date)) = (start_date_res, end_date_res) {
+            if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
+                rows.push(DialogueRow {
+                    shift_group: record.shift_group,
+                    shift: record.shift,
+                    teacher_name: record.teacher_name,
+                    start_date: record.start,
+                    end_date: record.finish,
+                });
+            }
         }
     }
 
@@ -159,27 +161,27 @@ fn load_dialogue_rows_from_xlsx(
 
         let row = row.iter().map(|cell| cell.to_string()).collect::<Vec<_>>();
 
-        let shift_group = &row[0];
+        let shift_group = row.get(0).map(|s| s.as_str()).unwrap_or("");
         if !shift_group.is_empty() {
             shift_group_temp = shift_group.to_string();
         }
 
-        let shift = &row[6];
+        let shift = row.get(6).map(|s| s.as_str()).unwrap_or("");
         if !shift.is_empty() {
             shift_temp = shift.to_string();
         }
 
-        let teacher_name = &row[1];
+        let teacher_name = row.get(1).map(|s| s.as_str()).unwrap_or("");
         if !teacher_name.is_empty() {
             teacher_name_temp = teacher_name.to_string();
         }
 
-        let start_date = &row[4];
+        let start_date = row.get(4).map(|s| s.as_str()).unwrap_or("");
         if !start_date.is_empty() {
             start_date_temp = start_date.to_string();
         }
 
-        let end_date = &row[5];
+        let end_date = row.get(5).map(|s| s.as_str()).unwrap_or("");
         if !end_date.is_empty() {
             end_date_temp = end_date.to_string();
         }
@@ -188,17 +190,19 @@ fn load_dialogue_rows_from_xlsx(
             continue;
         }
 
-        let start_date = parse_dialogue_datetime(&start_date_temp)?;
-        let end_date = parse_dialogue_datetime(&end_date_temp)?;
+        let start_date_res = parse_dialogue_datetime(&start_date_temp);
+        let end_date_res = parse_dialogue_datetime(&end_date_temp);
 
-        if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
-            rows.push(DialogueRow {
-                shift_group: shift_group_temp.clone(),
-                shift: shift_temp.clone(),
-                teacher_name: teacher_name_temp.clone(),
-                start_date: start_date_temp.clone(),
-                end_date: end_date_temp.clone(),
-            });
+        if let (Ok(start_date), Ok(end_date)) = (start_date_res, end_date_res) {
+            if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
+                rows.push(DialogueRow {
+                    shift_group: shift_group_temp.clone(),
+                    shift: shift_temp.clone(),
+                    teacher_name: teacher_name_temp.clone(),
+                    start_date: start_date_temp.clone(),
+                    end_date: end_date_temp.clone(),
+                });
+            }
         }
     }
 
