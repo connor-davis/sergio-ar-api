@@ -322,7 +322,7 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
 
     while let Some(field) = multipart.next_field().await.unwrap() {
         let name = field.name().unwrap().to_string();
-        let file_name = field.file_name().unwrap_or(&name).to_string();
+        let file_name = field.file_name().unwrap_or(&name).to_string().to_lowercase();
         let data = field.bytes().await.unwrap();
 
         let file_path = format!("{}/{}", &directory_path, &file_name);
