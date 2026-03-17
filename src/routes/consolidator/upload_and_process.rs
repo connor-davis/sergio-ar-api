@@ -153,7 +153,7 @@ fn load_dialogue_rows_from_xlsx(
     for (_, row) in file_rows {
         current_row += 1;
 
-        if current_row == total_rows - 4 {
+        if total_rows > 4 && current_row == total_rows - 4 {
             break;
         }
 
@@ -210,21 +210,34 @@ fn load_dialogue_rows(
     slot: u8,
     process_date: NaiveDateTime,
 ) -> Result<Vec<DialogueRow>, Error> {
-    let csv_path = format!("{}/dialogue-{}.csv", base_path, slot);
-    let xlsx_path = format!("{}/dialogue-{}.xlsx", base_path, slot);
-
-    if std::path::Path::new(&csv_path).exists() {
-        tracing::info!("📄 Loading dialogue-{} from CSV", slot);
-        load_dialogue_rows_from_csv(&csv_path, process_date)
-    } else if std::path::Path::new(&xlsx_path).exists() {
-        tracing::info!("📄 Loading dialogue-{} from XLSX", slot);
-        load_dialogue_rows_from_xlsx(&xlsx_path, process_date)
-    } else {
-        Err(anyhow::anyhow!(
-            "dialogue-{} file not found (tried .csv and .xlsx)",
-            slot
-        ))
+    // Look for any file starting with dialogue-{slot} in the directory
+    let entries = std::fs::read_dir(base_path)?;
+    
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                if file_name.starts_with(&format!("dialogue-{}", slot)) {
+                    if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
+                        if extension.eq_ignore_ascii_case("csv") {
+                            tracing::info!("📄 Loading {} from CSV", file_name);
+                            return load_dialogue_rows_from_csv(path.to_str().unwrap(), process_date);
+                        } else if extension.eq_ignore_ascii_case("xlsx") {
+                            tracing::info!("📄 Loading {} from XLSX", file_name);
+                            return load_dialogue_rows_from_xlsx(path.to_str().unwrap(), process_date);
+                        }
+                    }
+                }
+            }
+        }
     }
+
+    Err(anyhow::anyhow!(
+        "dialogue-{} file not found (checked for any file starting with dialogue-{})",
+        slot,
+        slot
+    ))
 }
 
 pub async fn upload_and_process(
@@ -282,19 +295,23 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
     let directory_exists = try_exists(&directory_path).await;
 
     match directory_exists {
-        Ok(directory) => {
-            if !directory {
-                tracing::info!("❕ Directory not found. Creating.");
+        Ok(exists) => {
+            if exists {
+                tracing::info!("❕ Directory exists. Cleaning.");
+                if let Err(e) = tokio::fs::remove_dir_all(&directory_path).await {
+                    tracing::error!("🔥 Failed to clean directory: {}", e);
+                }
+            }
+            
+            tracing::info!("❕ Creating directory.");
+            let create_dir_result = create_dir(&directory_path).await;
 
-                let create_dir_result = create_dir(&directory_path).await;
-
-                match create_dir_result {
-                    Ok(_) => {
-                        tracing::info!("✅ Directory created.");
-                    }
-                    Err(_) => {
-                        tracing::error!("🔥 Failed to create directory.");
-                    }
+            match create_dir_result {
+                Ok(_) => {
+                    tracing::info!("✅ Directory created.");
+                }
+                Err(_) => {
+                    tracing::error!("🔥 Failed to create directory.");
                 }
             }
         }
@@ -305,9 +322,10 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
 
     while let Some(field) = multipart.next_field().await.unwrap() {
         let name = field.name().unwrap().to_string();
+        let file_name = field.file_name().unwrap_or(&name).to_string();
         let data = field.bytes().await.unwrap();
 
-        let file_path = format!("{}/{}", &directory_path, &name);
+        let file_path = format!("{}/{}", &directory_path, &file_name);
         let file_exists = try_exists(&file_path).await?;
 
         let mut file = if file_exists {
@@ -325,7 +343,7 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
 
         match write_result {
             Ok(_) => {
-                tracing::info!("✅ File data written to temporary file: {}", &name);
+                tracing::info!("✅ File data written to temporary file: {}", &file_name);
             }
             Err(_) => {
                 tracing::error!("🔥 Failed to write file data to temporary file.");
