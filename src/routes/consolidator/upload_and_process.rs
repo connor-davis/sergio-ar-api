@@ -105,22 +105,63 @@ fn load_dialogue_rows_from_csv(
 
     let mut rows = Vec::new();
 
-    for record in reader.deserialize::<DialogueCsvRow>() {
-        let record = record?;
+    for (index, record) in reader.deserialize::<DialogueCsvRow>().enumerate() {
+        let record = match record {
+            Ok(record) => record,
+            Err(error) => {
+                tracing::warn!(
+                    "Skipping malformed dialogue CSV row {} in {}: {:?}",
+                    index + 2,
+                    file_path,
+                    error
+                );
+                continue;
+            }
+        };
 
         let start_date_res = parse_dialogue_datetime(&record.start);
         let end_date_res = parse_dialogue_datetime(&record.finish);
 
-        if let (Ok(start_date), Ok(end_date)) = (start_date_res, end_date_res) {
-            if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
-                rows.push(DialogueRow {
-                    shift_group: record.shift_group,
-                    shift: record.shift,
-                    teacher_name: record.teacher_name,
-                    start_date: record.start,
-                    end_date: record.finish,
-                });
+        let (start_date, end_date) = match (start_date_res, end_date_res) {
+            (Ok(start_date), Ok(end_date)) => (start_date, end_date),
+            (Err(start_error), Err(end_error)) => {
+                tracing::warn!(
+                    "Skipping dialogue CSV row {} in {} due to invalid start and finish datetimes: {:?}, {:?}",
+                    index + 2,
+                    file_path,
+                    start_error,
+                    end_error
+                );
+                continue;
             }
+            (Err(error), _) => {
+                tracing::warn!(
+                    "Skipping dialogue CSV row {} in {} due to invalid start datetime: {:?}",
+                    index + 2,
+                    file_path,
+                    error
+                );
+                continue;
+            }
+            (_, Err(error)) => {
+                tracing::warn!(
+                    "Skipping dialogue CSV row {} in {} due to invalid finish datetime: {:?}",
+                    index + 2,
+                    file_path,
+                    error
+                );
+                continue;
+            }
+        };
+
+        if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
+            rows.push(DialogueRow {
+                shift_group: record.shift_group,
+                shift: record.shift,
+                teacher_name: record.teacher_name,
+                start_date: record.start,
+                end_date: record.finish,
+            });
         }
     }
 
@@ -252,7 +293,11 @@ pub async fn upload_and_process(
 
     tracing::info!("✅ Upload successful!");
 
-    spawn(consolidate_files(app_state, query.date));
+    spawn(async move {
+        if let Err(error) = consolidate_files(app_state, query.date).await {
+            tracing::error!("🔥 Consolidation failed: {:?}", error);
+        }
+    });
 
     Ok("Your files are being processed. Please check back periodically to see the processed data.")
 }
