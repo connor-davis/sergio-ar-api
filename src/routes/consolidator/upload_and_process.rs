@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::{self, File}, io::Write};
+use std::{collections::HashMap, fs, io::Write};
 
 use anyhow::Error;
 use axum::{
@@ -68,6 +68,14 @@ pub struct InvoicingRow {
     pub shift: String,
 }
 
+struct InvoicingCsvColumns {
+    teacher_name: usize,
+    eligible: usize,
+    activity_start: usize,
+    activity_end: usize,
+    shift: Vec<usize>,
+}
+
 fn parse_process_date(process_date: &str) -> Result<NaiveDateTime, Error> {
     let process_date_split = process_date.split("-").collect::<Vec<_>>();
     let process_date_day = process_date_split[2];
@@ -104,6 +112,33 @@ fn parse_dialogue_datetime(value: &str) -> Result<NaiveDateTime, Error> {
 
 fn is_same_day(left: NaiveDateTime, right: NaiveDateTime) -> bool {
     left.day() == right.day() && left.month() == right.month() && left.year() == right.year()
+}
+
+fn parse_invoicing_datetime(value: &str) -> Result<NaiveDateTime, Error> {
+    let value = value.trim().trim_matches('"');
+    let supported_formats = [
+        "%m/%d/%Y %I:%M:%S %p",
+        "%m/%d/%Y %I:%M %p",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ];
+
+    for format in supported_formats {
+        if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
+            return Ok(parsed);
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "Unsupported invoicing datetime format: {}",
+        value
+    ))
+}
+
+fn parse_eligible_status(value: &str) -> bool {
+    normalize_csv_header(value) == "eligible"
 }
 
 fn normalize_csv_header(header: &str) -> String {
@@ -157,6 +192,50 @@ fn build_dialogue_csv_columns(headers: &StringRecord) -> Result<DialogueCsvColum
         shift_group,
         teacher_name,
     })
+}
+
+fn build_invoicing_csv_columns(headers: &StringRecord) -> Result<InvoicingCsvColumns, Error> {
+    let teacher_name = find_header_index(headers, &["Teacher_Name", "Teacher Name"])
+        .ok_or_else(|| anyhow::anyhow!("Invoicing CSV is missing a Teacher Name column"))?;
+    let eligible = find_header_index(headers, &["Eligible_Status", "Eligible Status", "Eligible"])
+        .ok_or_else(|| anyhow::anyhow!("Invoicing CSV is missing an Eligible column"))?;
+    let activity_start = find_header_index(
+        headers,
+        &["Activity_Start_Time", "Activity Start Time", "Activity Start"],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Invoicing CSV is missing an Activity Start column"))?;
+    let activity_end = find_header_index(
+        headers,
+        &["Activity_End_Time", "Activity End Time", "Activity End"],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Invoicing CSV is missing an Activity End column"))?;
+
+    let shift = ["shift_name_tsm", "Shift_Name", "Shift Name", "Shift"]
+        .iter()
+        .filter_map(|alias| find_header_index(headers, &[*alias]))
+        .collect::<Vec<_>>();
+
+    if shift.is_empty() {
+        return Err(anyhow::anyhow!("Invoicing CSV is missing a Shift column"));
+    }
+
+    Ok(InvoicingCsvColumns {
+        teacher_name,
+        eligible,
+        activity_start,
+        activity_end,
+        shift,
+    })
+}
+
+fn first_non_empty_field(record: &StringRecord, indexes: &[usize]) -> String {
+    indexes
+        .iter()
+        .filter_map(|index| record.get(*index))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn load_dialogue_rows_from_csv(
@@ -514,46 +593,24 @@ async fn consolidate_files(
 
     tracing::info!("✅ Successfully opened all dialogue files.");
 
-    let file = File::open(&invoicing_file_path)?;
-    let mut parser_csv_reader = csv::ReaderBuilder::new().from_reader(file);
+    let invoicing_file_contents = fs::read(&invoicing_file_path)?;
+    let invoicing_file_contents = String::from_utf8_lossy(&invoicing_file_contents);
+    let invoicing_delimiter = detect_csv_delimiter(&invoicing_file_contents);
 
-    let mut data = String::new();
+    tracing::info!(
+        "📄 Parsing invoicing CSV {} using delimiter {:?}",
+        invoicing_file_path,
+        invoicing_delimiter as char
+    );
 
-    for record in parser_csv_reader.byte_records() {
-        let record = record?;
+    let mut invoicing_reader = ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .delimiter(invoicing_delimiter)
+        .flexible(true)
+        .from_reader(invoicing_file_contents.as_bytes());
 
-        for piece in record.into_iter() {
-            for c in piece.into_iter() {
-                let byte = c.to_string().parse::<u8>()?;
-
-                if byte == 0 {
-                    continue;
-                }
-
-                if byte == b'\n' {
-                    continue;
-                }
-
-                if byte == b'\t' {
-                    data.push_str(",")
-                } else {
-                    data.push(byte as char);
-                }
-            }
-
-            data.push_str("\n")
-        }
-    }
-
-    let data = data.replace("\n\n", "\n");
-
-    let reader = ReaderBuilder::new().from_reader(data.as_bytes());
-
-    let invoicing_sheet = reader
-        .into_records()
-        .map(|record| record.unwrap_or(csv::StringRecord::new()))
-        .filter(|record| record.len() > 0)
-        .collect::<Vec<_>>();
+    let invoicing_headers = invoicing_reader.headers()?.clone();
+    let invoicing_columns = build_invoicing_csv_columns(&invoicing_headers)?;
 
     tracing::info!("✅ Successfully opened invoicing file.");
 
@@ -576,87 +633,70 @@ async fn consolidate_files(
 
     let mut invoicing_rows: Vec<InvoicingRow> = Vec::new();
 
-    for row in invoicing_sheet {
-        let teacher_name = row.get(4);
-        let eligible = row.get(5);
-        let activity_start = row.get(7);
-        let activity_end = row.get(8);
-        let shift = row.get(9);
-
-        let teacher_name = match teacher_name {
-            Some(teacher_name) => teacher_name.to_string(),
-            None => String::new(),
-        };
-
-        let eligible = match eligible {
-            Some(eligible) => {
-                if eligible == "Eligible" {
-                    true
-                } else {
-                    false
-                }
+    for (index, row) in invoicing_reader.records().enumerate() {
+        let row = match row {
+            Ok(row) => row,
+            Err(error) => {
+                tracing::warn!(
+                    "Skipping malformed invoicing CSV row {} in {}: {:?}",
+                    index + 2,
+                    invoicing_file_path,
+                    error
+                );
+                continue;
             }
-            None => false,
         };
 
-        let activity_start = match activity_start {
-            Some(activity_start) => activity_start.to_string(),
-            None => String::new(),
+        let teacher_name = row
+            .get(invoicing_columns.teacher_name)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let eligible = parse_eligible_status(row.get(invoicing_columns.eligible).unwrap_or(""));
+        let activity_start = row
+            .get(invoicing_columns.activity_start)
+            .unwrap_or("")
+            .trim();
+        let activity_end = row
+            .get(invoicing_columns.activity_end)
+            .unwrap_or("")
+            .trim();
+        let shift = first_non_empty_field(&row, &invoicing_columns.shift);
+
+        if teacher_name.is_empty() || activity_start.is_empty() || activity_end.is_empty() {
+            tracing::warn!(
+                "Skipping invoicing CSV row {} in {} due to missing required columns",
+                index + 2,
+                invoicing_file_path
+            );
+            continue;
+        }
+
+        let activity_start_date = match parse_invoicing_datetime(activity_start) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                tracing::warn!(
+                    "Skipping invoicing CSV row {} in {} due to invalid activity start datetime: {:?}",
+                    index + 2,
+                    invoicing_file_path,
+                    error
+                );
+                continue;
+            }
         };
 
-        let activity_end = match activity_end {
-            Some(activity_end) => activity_end.to_string(),
-            None => String::new(),
+        let activity_end_date = match parse_invoicing_datetime(activity_end) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                tracing::warn!(
+                    "Skipping invoicing CSV row {} in {} due to invalid activity end datetime: {:?}",
+                    index + 2,
+                    invoicing_file_path,
+                    error
+                );
+                continue;
+            }
         };
-
-        let shift = match shift {
-            Some(shift) => shift.to_string(),
-            None => String::new(),
-        };
-
-        let activity_start_split = activity_start.split(" ").collect::<Vec<_>>();
-        let activity_start_date = activity_start_split[0];
-        let activity_start_day = activity_start_date.split("/").collect::<Vec<_>>()[1];
-        let activity_start_month = activity_start_date.split("/").collect::<Vec<_>>()[0];
-        let activity_start_year = activity_start_date.split("/").collect::<Vec<_>>()[2];
-        let activity_start_time = activity_start_split[1];
-        let activity_start_hour = activity_start_time.split(":").collect::<Vec<_>>()[0];
-        let activity_start_minute = activity_start_time.split(":").collect::<Vec<_>>()[1];
-
-        let activity_start_date = format!(
-            "{}/{}/{} {}:{}",
-            activity_start_day,
-            activity_start_month,
-            activity_start_year,
-            activity_start_hour,
-            activity_start_minute
-        );
-
-        let activity_start_date =
-            NaiveDateTime::parse_from_str(&format!("{}", activity_start_date), "%d/%m/%Y %H:%M")
-                .unwrap();
-
-        let activity_end_split = activity_end.split(" ").collect::<Vec<_>>();
-        let activity_end_date = activity_end_split[0];
-        let activity_end_day = activity_end_date.split("/").collect::<Vec<_>>()[1];
-        let activity_end_month = activity_end_date.split("/").collect::<Vec<_>>()[0];
-        let activity_end_year = activity_end_date.split("/").collect::<Vec<_>>()[2];
-        let activity_end_time = activity_end_split[1];
-        let activity_end_hour = activity_end_time.split(":").collect::<Vec<_>>()[0];
-        let activity_end_minute = activity_end_time.split(":").collect::<Vec<_>>()[1];
-
-        let activity_end_date = format!(
-            "{}/{}/{} {}:{}",
-            activity_end_day,
-            activity_end_month,
-            activity_end_year,
-            activity_end_hour,
-            activity_end_minute
-        );
-
-        let activity_end_date =
-            NaiveDateTime::parse_from_str(&format!("{}", activity_end_date), "%d/%m/%Y %H:%M")
-                .unwrap();
 
         let invoicing_row = InvoicingRow {
             teacher_name,
