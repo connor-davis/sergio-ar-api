@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs::File, io::Write};
+use std::{collections::HashMap, fs::{self, File}, io::Write};
 
 use anyhow::Error;
 use axum::{
@@ -9,7 +9,7 @@ use axum::{
 };
 use calamine::{open_workbook, Reader, Xlsx};
 use chrono::{Datelike, NaiveDateTime};
-use csv::ReaderBuilder;
+use csv::{ReaderBuilder, StringRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
@@ -43,18 +43,12 @@ pub struct DialogueConsolidatedRow {
     pub end_date: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct DialogueCsvRow {
-    #[serde(rename = "Start")]
-    start: String,
-    #[serde(rename = "Finish")]
-    finish: String,
-    #[serde(rename = "Shift: Shift Number")]
-    shift: String,
-    #[serde(rename = "Resource: Shift Group")]
-    shift_group: String,
-    #[serde(rename = "Resource: Resource Name")]
-    teacher_name: String,
+struct DialogueCsvColumns {
+    start: usize,
+    finish: usize,
+    shift: usize,
+    shift_group: usize,
+    teacher_name: usize,
 }
 
 // #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -88,24 +82,109 @@ fn parse_process_date(process_date: &str) -> Result<NaiveDateTime, Error> {
 }
 
 fn parse_dialogue_datetime(value: &str) -> Result<NaiveDateTime, Error> {
-    NaiveDateTime::parse_from_str(value.trim(), "%m/%d/%Y %I:%M %p").map_err(Error::from)
+    let value = value.trim().trim_matches('"');
+    let supported_formats = [
+        "%m/%d/%Y %I:%M %p",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ];
+
+    for format in supported_formats {
+        if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
+            return Ok(parsed);
+        }
+    }
+
+    Err(anyhow::anyhow!(
+        "Unsupported dialogue datetime format: {}",
+        value
+    ))
 }
 
 fn is_same_day(left: NaiveDateTime, right: NaiveDateTime) -> bool {
     left.day() == right.day() && left.month() == right.month() && left.year() == right.year()
 }
 
+fn normalize_csv_header(header: &str) -> String {
+    header
+        .trim()
+        .trim_start_matches('\u{feff}')
+        .to_ascii_lowercase()
+}
+
+fn detect_csv_delimiter(contents: &str) -> u8 {
+    let sample_line = contents
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
+
+    let candidates = [b',', b';', b'\t', b'|'];
+
+    candidates
+        .into_iter()
+        .max_by_key(|candidate| sample_line.matches(*candidate as char).count())
+        .unwrap_or(b',')
+}
+
+fn find_header_index(headers: &StringRecord, aliases: &[&str]) -> Option<usize> {
+    headers.iter().position(|header| {
+        let normalized_header = normalize_csv_header(header);
+
+        aliases
+            .iter()
+            .any(|alias| normalized_header == normalize_csv_header(alias))
+    })
+}
+
+fn build_dialogue_csv_columns(headers: &StringRecord) -> Result<DialogueCsvColumns, Error> {
+    let start = find_header_index(headers, &["Start", "Activity Start"])
+        .ok_or_else(|| anyhow::anyhow!("Dialogue CSV is missing a Start column"))?;
+    let finish = find_header_index(headers, &["Finish", "End", "Activity End"])
+        .ok_or_else(|| anyhow::anyhow!("Dialogue CSV is missing a Finish column"))?;
+    let shift = find_header_index(headers, &["Shift: Shift Number", "Shift Number", "Shift"])
+        .ok_or_else(|| anyhow::anyhow!("Dialogue CSV is missing a Shift column"))?;
+    let shift_group = find_header_index(headers, &["Resource: Shift Group", "Shift Group"])
+        .ok_or_else(|| anyhow::anyhow!("Dialogue CSV is missing a Shift Group column"))?;
+    let teacher_name =
+        find_header_index(headers, &["Resource: Resource Name", "Resource Name", "Teacher Name"])
+            .ok_or_else(|| anyhow::anyhow!("Dialogue CSV is missing a Teacher Name column"))?;
+
+    Ok(DialogueCsvColumns {
+        start,
+        finish,
+        shift,
+        shift_group,
+        teacher_name,
+    })
+}
+
 fn load_dialogue_rows_from_csv(
     file_path: &str,
     process_date: NaiveDateTime,
 ) -> Result<Vec<DialogueRow>, Error> {
+    let file_contents = fs::read(file_path)?;
+    let file_contents = String::from_utf8_lossy(&file_contents);
+    let delimiter = detect_csv_delimiter(&file_contents);
+
+    tracing::info!(
+        "📄 Parsing dialogue CSV {} using delimiter {:?}",
+        file_path,
+        delimiter as char
+    );
+
     let mut reader = ReaderBuilder::new()
         .trim(csv::Trim::All)
-        .from_path(file_path)?;
+        .delimiter(delimiter)
+        .flexible(true)
+        .from_reader(file_contents.as_bytes());
+
+    let headers = reader.headers()?.clone();
+    let columns = build_dialogue_csv_columns(&headers)?;
 
     let mut rows = Vec::new();
 
-    for (index, record) in reader.deserialize::<DialogueCsvRow>().enumerate() {
+    for (index, record) in reader.records().enumerate() {
         let record = match record {
             Ok(record) => record,
             Err(error) => {
@@ -119,8 +198,28 @@ fn load_dialogue_rows_from_csv(
             }
         };
 
-        let start_date_res = parse_dialogue_datetime(&record.start);
-        let end_date_res = parse_dialogue_datetime(&record.finish);
+        let start = record.get(columns.start).unwrap_or("").trim();
+        let finish = record.get(columns.finish).unwrap_or("").trim();
+        let shift = record.get(columns.shift).unwrap_or("").trim();
+        let shift_group = record.get(columns.shift_group).unwrap_or("").trim();
+        let teacher_name = record.get(columns.teacher_name).unwrap_or("").trim();
+
+        if start.is_empty()
+            || finish.is_empty()
+            || shift.is_empty()
+            || shift_group.is_empty()
+            || teacher_name.is_empty()
+        {
+            tracing::warn!(
+                "Skipping dialogue CSV row {} in {} due to missing required columns",
+                index + 2,
+                file_path
+            );
+            continue;
+        }
+
+        let start_date_res = parse_dialogue_datetime(start);
+        let end_date_res = parse_dialogue_datetime(finish);
 
         let (start_date, end_date) = match (start_date_res, end_date_res) {
             (Ok(start_date), Ok(end_date)) => (start_date, end_date),
@@ -156,11 +255,11 @@ fn load_dialogue_rows_from_csv(
 
         if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
             rows.push(DialogueRow {
-                shift_group: record.shift_group,
-                shift: record.shift,
-                teacher_name: record.teacher_name,
-                start_date: record.start,
-                end_date: record.finish,
+                shift_group: shift_group.to_string(),
+                shift: shift.to_string(),
+                teacher_name: teacher_name.to_string(),
+                start_date: start.to_string(),
+                end_date: finish.to_string(),
             });
         }
     }
