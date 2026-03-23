@@ -1277,39 +1277,13 @@ async fn consolidate_files(
     tracing::info!("✅ Successfully consolidated dialogues.");
 
     consolidated_rows.sort_by(|a, b| {
-        let a_date = a.start_date.split(" ").collect::<Vec<_>>()[0];
-        let a_day = a_date.split("/").collect::<Vec<_>>()[1];
-        let a_month = a_date.split("/").collect::<Vec<_>>()[0];
-        let a_year = a_date.split("/").collect::<Vec<_>>()[2];
-        let a_time = a.start_date.split(" ").collect::<Vec<_>>()[1];
-        let a_hour = a_time.split(":").collect::<Vec<_>>()[0];
-        let a_minute = a_time.split(":").collect::<Vec<_>>()[1];
-        let a_time_period = a.start_date.split(" ").collect::<Vec<_>>()[2];
-
-        let b_date = b.start_date.split(" ").collect::<Vec<_>>()[0];
-        let b_day = b_date.split("/").collect::<Vec<_>>()[1];
-        let b_month = b_date.split("/").collect::<Vec<_>>()[0];
-        let b_year = b_date.split("/").collect::<Vec<_>>()[2];
-        let b_time = b.start_date.split(" ").collect::<Vec<_>>()[1];
-        let b_hour = b_time.split(":").collect::<Vec<_>>()[0];
-        let b_minute = b_time.split(":").collect::<Vec<_>>()[1];
-        let b_time_period = b.start_date.split(" ").collect::<Vec<_>>()[2];
-
-        let a_date = format!(
-            "{}/{}/{} {}:{} {}",
-            a_day, a_month, a_year, a_hour, a_minute, a_time_period
-        );
-
-        let b_date = format!(
-            "{}/{}/{} {}:{} {}",
-            b_day, b_month, b_year, b_hour, b_minute, b_time_period
-        );
-
-        let a_date = NaiveDateTime::parse_from_str(&a_date, "%d/%m/%Y %I:%M %p").unwrap();
-
-        let b_date = NaiveDateTime::parse_from_str(&b_date, "%d/%m/%Y %I:%M %p").unwrap();
-
-        a_date.cmp(&b_date)
+        match (
+            parse_dialogue_datetime(&a.start_date),
+            parse_dialogue_datetime(&b.start_date),
+        ) {
+            (Ok(a_date), Ok(b_date)) => a_date.cmp(&b_date),
+            _ => a.start_date.cmp(&b.start_date),
+        }
     });
 
     consolidated_rows.sort_by(|a, b| a.teacher_name.cmp(&b.teacher_name));
@@ -1319,23 +1293,22 @@ async fn consolidate_files(
     let consolidated_rows: Vec<&DialogueConsolidatedRow> = consolidated_rows
         .iter()
         .filter(|row| {
-            let row_start_date = row.start_date.split(" ").collect::<Vec<_>>()[0];
-            let row_start_day = row_start_date.split("/").collect::<Vec<_>>()[1];
-            let row_start_month = row_start_date.split("/").collect::<Vec<_>>()[0];
-            let row_start_year = row_start_date.split("/").collect::<Vec<_>>()[2];
-
-            let row_start_date =
-                format!("{}/{}/{}", row_start_day, row_start_month, row_start_year);
-
-            let row_start_date = NaiveDateTime::parse_from_str(
-                &format!("{} 00:00:00", row_start_date),
-                "%d/%m/%Y %H:%M:%S",
-            )
-            .unwrap();
-
-            row_start_date.day() == process_date.day()
-                && row_start_date.month() == process_date.month()
-                && row_start_date.year() == process_date.year()
+            match parse_dialogue_datetime(&row.start_date) {
+                Ok(row_start_date) => {
+                    row_start_date.day() == process_date.day()
+                        && row_start_date.month() == process_date.month()
+                        && row_start_date.year() == process_date.year()
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "Skipping consolidated row for teacher {} due to invalid start datetime {:?}: {:?}",
+                        row.teacher_name,
+                        row.start_date,
+                        error
+                    );
+                    false
+                }
+            }
         })
         .collect::<Vec<&DialogueConsolidatedRow>>();
 
@@ -1353,53 +1326,24 @@ async fn consolidate_files(
         let shift_group = consolidated_row.shift_group.clone();
         let shift = consolidated_row.shift.clone();
         let shift_type = consolidated_row.shift_type.clone();
-        let start_date = consolidated_row.start_date.clone();
-        let end_date = consolidated_row.end_date.clone();
+        let start_date = parse_dialogue_datetime(&consolidated_row.start_date).map_err(|error| {
+            tracing::error!(
+                "🔥 Failed to parse consolidated row start datetime {:?}: {:?}",
+                consolidated_row.start_date,
+                error
+            );
 
-        let start_date_split = start_date.split(" ").collect::<Vec<_>>();
-        let end_date_split = end_date.split(" ").collect::<Vec<_>>();
+            Error::msg("Failed to parse consolidated row start datetime.")
+        })?;
+        let end_date = parse_dialogue_datetime(&consolidated_row.end_date).map_err(|error| {
+            tracing::error!(
+                "🔥 Failed to parse consolidated row end datetime {:?}: {:?}",
+                consolidated_row.end_date,
+                error
+            );
 
-        let start_time_period = start_date_split[2];
-        let end_time_period = end_date_split[2];
-
-        let start_date = start_date_split[0];
-        let end_date = end_date_split[0];
-
-        let start_time = start_date_split[1];
-        let end_time = end_date_split[1];
-
-        let start_date_split = start_date.split("/").collect::<Vec<_>>();
-        let end_date_split = end_date.split("/").collect::<Vec<_>>();
-
-        let start_day = start_date_split[1];
-        let start_month = start_date_split[0];
-        let start_year = start_date_split[2];
-
-        let end_day = end_date_split[1];
-        let end_month = end_date_split[0];
-        let end_year = end_date_split[2];
-
-        let start_time_split = start_time.split(":").collect::<Vec<_>>();
-        let end_time_split = end_time.split(":").collect::<Vec<_>>();
-
-        let start_hour = start_time_split[0];
-        let start_minute = start_time_split[1];
-
-        let end_hour = end_time_split[0];
-        let end_minute = end_time_split[1];
-
-        let start_date = format!(
-            "{}/{}/{} {}:{} {}",
-            start_day, start_month, start_year, start_hour, start_minute, start_time_period
-        );
-
-        let end_date = format!(
-            "{}/{}/{} {}:{} {}",
-            end_day, end_month, end_year, end_hour, end_minute, end_time_period
-        );
-
-        let start_date = NaiveDateTime::parse_from_str(&start_date, "%d/%m/%Y %I:%M %p").unwrap();
-        let end_date = NaiveDateTime::parse_from_str(&end_date, "%d/%m/%Y %I:%M %p").unwrap();
+            Error::msg("Failed to parse consolidated row end datetime.")
+        })?;
 
         let teacher_found = sqlx::query_scalar::<_, i32>("SELECT id FROM teachers WHERE name = $1")
             .bind(&teacher_name)
