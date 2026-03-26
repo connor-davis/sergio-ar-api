@@ -168,11 +168,19 @@ fn preprocess_malformed_csv(contents: &str) -> String {
     for line in contents.lines() {
         let trimmed = line.trim();
 
-        // Check if this is a malformed line with the pattern:
+        // Check if this is a malformed line with the specific pattern:
         // "Field1,""Field2"",""Field3"",..."""
+        // The key indicator is the pattern: ,""Field""  (comma followed by double-quote-quote)
+        // This is different from normal CSV which uses: ","Field"  (quote-comma-quote)
+        //
+        // We need to be very specific to avoid corrupting normal CSV files.
+        // The malformed pattern specifically has sequences of 3 or more consecutive quotes
+        // after commas, which should not occur in properly formatted CSV.
+
+        let has_triple_quotes = trimmed.contains(r#"""""#);
+
         if trimmed.starts_with('"')
-            && trimmed.contains(',')
-            && trimmed.matches(r#""""#).count() >= 2 {
+            && has_triple_quotes {
 
             // Remove the leading quote
             let mut fixed_line = trimmed.strip_prefix('"').unwrap_or(trimmed).to_string();
