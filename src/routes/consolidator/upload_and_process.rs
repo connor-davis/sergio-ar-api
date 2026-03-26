@@ -148,107 +148,11 @@ fn normalize_csv_header(header: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn detect_csv_delimiter(contents: &str) -> u8 {
-    let sample_line = contents
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default();
-
-    let candidates = [b',', b';', b'\t', b'|'];
-
-    candidates
-        .into_iter()
-        .max_by_key(|candidate| sample_line.matches(*candidate as char).count())
-        .unwrap_or(b',')
-}
-
 fn preprocess_malformed_csv(contents: &str) -> String {
-    let mut result = String::new();
-
-    for line in contents.lines() {
-        let trimmed = line.trim();
-
-        // Check if this is a malformed line with the specific pattern:
-        // "Field1,""Field2"",""Field3"",..."""
-        // The key indicator is the pattern: ,""Field""  (comma followed by double-quote-quote)
-        // This is different from normal CSV which uses: ","Field"  (quote-comma-quote)
-        //
-        // We need to be very specific to avoid corrupting normal CSV files.
-        // The malformed pattern specifically has sequences of 3 or more consecutive quotes
-        // after commas, which should not occur in properly formatted CSV.
-
-        let has_triple_quotes = trimmed.contains(r#"""""#);
-
-        if trimmed.starts_with('"')
-            && has_triple_quotes {
-
-            // Remove the leading quote
-            let mut fixed_line = trimmed.strip_prefix('"').unwrap_or(trimmed).to_string();
-
-            // Remove trailing quotes (could be one or more)
-            while fixed_line.ends_with('"') {
-                fixed_line = fixed_line.strip_suffix('"').unwrap_or(&fixed_line).to_string();
-            }
-
-            // Now we have: Field1,""Field2"",""Field3"",""Field4""
-            // or: Field1,""Field2"",""Field3"",""Field4
-            // We need to convert ,"" to ," and "" to " (for the opening/closing of fields)
-
-            let mut processed = String::new();
-            let chars: Vec<char> = fixed_line.chars().collect();
-            let mut i = 0;
-
-            while i < chars.len() {
-                // Pattern: ,"" at the start of a quoted field
-                if i + 2 < chars.len() && chars[i] == ',' && chars[i+1] == '"' && chars[i+2] == '"' {
-                    processed.push(',');
-                    processed.push('"');
-                    i += 3;
-
-                    // Now find the closing "" for this field
-                    let start_pos = i;
-                    let mut found_closing = false;
-                    while i + 1 < chars.len() {
-                        if chars[i] == '"' && chars[i+1] == '"' {
-                            // Check if this is followed by a comma or end of string
-                            if i + 2 >= chars.len() || chars[i+2] == ',' {
-                                // Copy everything from start_pos to current position
-                                for k in start_pos..i {
-                                    processed.push(chars[k]);
-                                }
-                                processed.push('"');
-                                i += 2; // Skip the ""
-                                found_closing = true;
-                                break;
-                            }
-                        }
-                        i += 1;
-                    }
-
-                    // If we didn't find closing quotes and we're at the end, add closing quote
-                    if !found_closing {
-                        for k in start_pos..chars.len() {
-                            processed.push(chars[k]);
-                        }
-                        // Add closing quote since the field started with quotes
-                        processed.push('"');
-                        break;
-                    }
-                } else {
-                    processed.push(chars[i]);
-                    i += 1;
-                }
-            }
-
-            result.push_str(&processed);
-        } else {
-            result.push_str(line);
-        }
-
-        result.push('\n');
-    }
-
-    result
+    // Simple approach: remove all quotes from the CSV content
+    // This handles both malformed CSV with extra quotes and normal quoted CSV
+    // uniformly by stripping all quote characters.
+    contents.replace('"', "")
 }
 
 fn find_header_index(headers: &StringRecord, aliases: &[&str]) -> Option<usize> {
@@ -334,10 +238,11 @@ fn load_dialogue_rows_from_csv(
     let file_contents = fs::read(file_path)?;
     let file_contents = String::from_utf8_lossy(&file_contents);
 
-    // Preprocess to fix malformed CSV with extra quotes
+    // Preprocess to remove all quotes
     let file_contents = preprocess_malformed_csv(&file_contents);
 
-    let delimiter = detect_csv_delimiter(&file_contents);
+    // Always use comma as delimiter
+    let delimiter = b',';
 
     tracing::info!(
         "📄 Parsing dialogue CSV {} using delimiter {:?}",
@@ -689,10 +594,11 @@ async fn consolidate_files(
     let invoicing_file_contents = fs::read(&invoicing_file_path)?;
     let invoicing_file_contents = String::from_utf8_lossy(&invoicing_file_contents);
 
-    // Preprocess to fix malformed CSV with extra quotes
+    // Preprocess to remove all quotes
     let invoicing_file_contents = preprocess_malformed_csv(&invoicing_file_contents);
 
-    let invoicing_delimiter = detect_csv_delimiter(&invoicing_file_contents);
+    // Always use comma as delimiter
+    let invoicing_delimiter = b',';
 
     tracing::info!(
         "📄 Parsing invoicing CSV {} using delimiter {:?}",
