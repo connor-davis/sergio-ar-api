@@ -70,7 +70,7 @@ pub struct InvoicingRow {
 
 struct InvoicingCsvColumns {
     teacher_name: usize,
-    eligible: usize,
+    eligible: Option<usize>,
     activity_start: usize,
     activity_end: usize,
     shift: Vec<usize>,
@@ -195,22 +195,30 @@ fn build_dialogue_csv_columns(headers: &StringRecord) -> Result<DialogueCsvColum
 }
 
 fn build_invoicing_csv_columns(headers: &StringRecord) -> Result<InvoicingCsvColumns, Error> {
-    let teacher_name = find_header_index(headers, &["Teacher_Name", "Teacher Name"])
-        .ok_or_else(|| anyhow::anyhow!("Invoicing CSV is missing a Teacher Name column"))?;
-    let eligible = find_header_index(headers, &["Eligible_Status", "Eligible Status", "Eligible"])
-        .ok_or_else(|| anyhow::anyhow!("Invoicing CSV is missing an Eligible column"))?;
+    let teacher_name = find_header_index(
+        headers,
+        &["Resource: Resource Name", "Resource Name", "Teacher_Name", "Teacher Name"],
+    )
+    .ok_or_else(|| {
+        let cols: Vec<&str> = headers.iter().collect();
+        anyhow::anyhow!(
+            "Invoicing CSV is missing a Teacher Name column. Found columns: {:?}",
+            cols
+        )
+    })?;
+    let eligible = find_header_index(headers, &["Eligible_Status", "Eligible Status", "Eligible"]);
     let activity_start = find_header_index(
         headers,
-        &["Activity_Start_Time", "Activity Start Time", "Activity Start"],
+        &["Activity_Start_Time", "Activity Start Time", "Activity Start", "Start"],
     )
     .ok_or_else(|| anyhow::anyhow!("Invoicing CSV is missing an Activity Start column"))?;
     let activity_end = find_header_index(
         headers,
-        &["Activity_End_Time", "Activity End Time", "Activity End"],
+        &["Activity_End_Time", "Activity End Time", "Activity End", "Finish"],
     )
     .ok_or_else(|| anyhow::anyhow!("Invoicing CSV is missing an Activity End column"))?;
 
-    let shift = ["shift_name_tsm", "Shift_Name", "Shift Name", "Shift"]
+    let shift = ["shift_name_tsm", "Shift_Name", "Shift Name", "Shift: Shift Number", "Shift Number", "Shift"]
         .iter()
         .filter_map(|alias| find_header_index(headers, &[*alias]))
         .collect::<Vec<_>>();
@@ -652,7 +660,11 @@ async fn consolidate_files(
             .unwrap_or("")
             .trim()
             .to_string();
-        let eligible = parse_eligible_status(row.get(invoicing_columns.eligible).unwrap_or(""));
+        let eligible = invoicing_columns
+            .eligible
+            .and_then(|idx| row.get(idx))
+            .map(parse_eligible_status)
+            .unwrap_or(true);
         let activity_start = row
             .get(invoicing_columns.activity_start)
             .unwrap_or("")
