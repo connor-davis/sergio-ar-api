@@ -148,18 +148,11 @@ fn normalize_csv_header(header: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn detect_csv_delimiter(contents: &str) -> u8 {
-    let sample_line = contents
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or_default();
-
-    let candidates = [b',', b';', b'\t', b'|'];
-
-    candidates
-        .into_iter()
-        .max_by_key(|candidate| sample_line.matches(*candidate as char).count())
-        .unwrap_or(b',')
+fn preprocess_malformed_csv(contents: &str) -> String {
+    // Simple approach: remove all quotes from the CSV content
+    // This handles both malformed CSV with extra quotes and normal quoted CSV
+    // uniformly by stripping all quote characters.
+    contents.replace('"', "")
 }
 
 fn find_header_index(headers: &StringRecord, aliases: &[&str]) -> Option<usize> {
@@ -252,7 +245,12 @@ fn load_dialogue_rows_from_csv(
 ) -> Result<Vec<DialogueRow>, Error> {
     let file_contents = fs::read(file_path)?;
     let file_contents = String::from_utf8_lossy(&file_contents);
-    let delimiter = detect_csv_delimiter(&file_contents);
+
+    // Preprocess to remove all quotes
+    let file_contents = preprocess_malformed_csv(&file_contents);
+
+    // Always use comma as delimiter
+    let delimiter = b',';
 
     tracing::info!(
         "📄 Parsing dialogue CSV {} using delimiter {:?}",
@@ -603,7 +601,12 @@ async fn consolidate_files(
 
     let invoicing_file_contents = fs::read(&invoicing_file_path)?;
     let invoicing_file_contents = String::from_utf8_lossy(&invoicing_file_contents);
-    let invoicing_delimiter = detect_csv_delimiter(&invoicing_file_contents);
+
+    // Preprocess to remove all quotes
+    let invoicing_file_contents = preprocess_malformed_csv(&invoicing_file_contents);
+
+    // Always use comma as delimiter
+    let invoicing_delimiter = b',';
 
     tracing::info!(
         "📄 Parsing invoicing CSV {} using delimiter {:?}",
