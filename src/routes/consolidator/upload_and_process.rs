@@ -141,6 +141,38 @@ fn parse_eligible_status(value: &str) -> bool {
     normalize_csv_header(value) == "eligible"
 }
 
+fn decode_bytes_to_string(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let utf16: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]))
+            .collect();
+        return String::from_utf16_lossy(&utf16);
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let utf16: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+            .collect();
+        return String::from_utf16_lossy(&utf16);
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn detect_csv_delimiter(contents: &str) -> u8 {
+    let sample_line = contents
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
+
+    let candidates = [b',', b';', b'\t', b'|'];
+
+    candidates
+        .into_iter()
+        .max_by_key(|candidate| sample_line.matches(*candidate as char).count())
+        .unwrap_or(b',')
+}
+
 fn normalize_csv_header(header: &str) -> String {
     header
         .trim()
@@ -244,7 +276,7 @@ fn load_dialogue_rows_from_csv(
     process_date: NaiveDateTime,
 ) -> Result<Vec<DialogueRow>, Error> {
     let file_contents = fs::read(file_path)?;
-    let file_contents = String::from_utf8_lossy(&file_contents);
+    let file_contents = decode_bytes_to_string(&file_contents);
 
     // Preprocess to remove all quotes
     let file_contents = preprocess_malformed_csv(&file_contents);
@@ -600,13 +632,12 @@ async fn consolidate_files(
     tracing::info!("✅ Successfully opened all dialogue files.");
 
     let invoicing_file_contents = fs::read(&invoicing_file_path)?;
-    let invoicing_file_contents = String::from_utf8_lossy(&invoicing_file_contents);
+    let invoicing_file_contents = decode_bytes_to_string(&invoicing_file_contents);
 
     // Preprocess to remove all quotes
     let invoicing_file_contents = preprocess_malformed_csv(&invoicing_file_contents);
 
-    // Always use comma as delimiter
-    let invoicing_delimiter = b',';
+    let invoicing_delimiter = detect_csv_delimiter(&invoicing_file_contents);
 
     tracing::info!(
         "📄 Parsing invoicing CSV {} using delimiter {:?}",
