@@ -19,7 +19,7 @@ pub async fn get_shift_groups(
         r#"
         SELECT DISTINCT shift_group
         FROM schedules
-        "#
+        "#,
     )
     .fetch_all(&app_state.db)
     .await

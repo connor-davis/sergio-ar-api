@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fs, io::Write};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    io::Write,
+};
 
 use anyhow::Error;
 use axum::{
@@ -76,6 +80,13 @@ struct InvoicingCsvColumns {
     shift: Vec<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DialogueMatchKey {
+    shift: String,
+    start_date: String,
+    end_date: String,
+}
+
 fn parse_process_date(process_date: &str) -> Result<NaiveDateTime, Error> {
     let process_date_split = process_date.split("-").collect::<Vec<_>>();
     let process_date_day = process_date_split[2];
@@ -83,7 +94,10 @@ fn parse_process_date(process_date: &str) -> Result<NaiveDateTime, Error> {
     let process_date_year = process_date_split[0];
 
     NaiveDateTime::parse_from_str(
-        &format!("{}/{}/{} 00:00:00", process_date_day, process_date_month, process_date_year),
+        &format!(
+            "{}/{}/{} 00:00:00",
+            process_date_day, process_date_month, process_date_year
+        ),
         "%d/%m/%Y %H:%M:%S",
     )
     .map_err(Error::from)
@@ -187,6 +201,167 @@ fn preprocess_malformed_csv(contents: &str) -> String {
     contents.replace('"', "")
 }
 
+fn normalize_identifier(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_shift_identifier(value: &str) -> String {
+    let value = normalize_identifier(value);
+    let numeric_candidate = value.replace(',', "");
+
+    if let Ok(integer) = numeric_candidate.parse::<i64>() {
+        return integer.to_string();
+    }
+
+    if let Ok(float) = numeric_candidate.parse::<f64>() {
+        if float.fract().abs() < f64::EPSILON {
+            return format!("{float:.0}");
+        }
+
+        let mut formatted = float.to_string();
+
+        if formatted.contains('.') {
+            while formatted.ends_with('0') {
+                formatted.pop();
+            }
+
+            if formatted.ends_with('.') {
+                formatted.pop();
+            }
+        }
+
+        return formatted;
+    }
+
+    value.to_ascii_lowercase()
+}
+
+fn canonicalize_dialogue_datetime(value: &str) -> String {
+    match parse_dialogue_datetime(value) {
+        Ok(parsed) => parsed.format("%Y-%m-%d %H:%M:%S").to_string(),
+        Err(_) => normalize_identifier(value).to_ascii_lowercase(),
+    }
+}
+
+fn build_dialogue_match_key(row: &DialogueRow) -> DialogueMatchKey {
+    DialogueMatchKey {
+        shift: normalize_shift_identifier(&row.shift),
+        start_date: canonicalize_dialogue_datetime(&row.start_date),
+        end_date: canonicalize_dialogue_datetime(&row.end_date),
+    }
+}
+
+fn consolidate_dialogue_rows(
+    first_dialogue_rows: &[DialogueRow],
+    second_dialogue_rows: &[DialogueRow],
+) -> Vec<DialogueConsolidatedRow> {
+    let first_keys = first_dialogue_rows
+        .iter()
+        .map(build_dialogue_match_key)
+        .collect::<Vec<_>>();
+    let second_keys = second_dialogue_rows
+        .iter()
+        .map(build_dialogue_match_key)
+        .collect::<Vec<_>>();
+
+    let first_key_set = first_keys.iter().cloned().collect::<HashSet<_>>();
+    let second_key_set = second_keys.iter().cloned().collect::<HashSet<_>>();
+
+    let dropped_keys = first_key_set
+        .difference(&second_key_set)
+        .cloned()
+        .collect::<HashSet<_>>();
+    let pickup_keys = second_key_set
+        .difference(&first_key_set)
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    let previous_shift_assignments = first_dialogue_rows
+        .iter()
+        .map(|row| {
+            (
+                build_dialogue_match_key(row),
+                (
+                    normalize_identifier(&row.teacher_name).to_ascii_lowercase(),
+                    normalize_identifier(&row.shift_group).to_ascii_lowercase(),
+                ),
+            )
+        })
+        .collect::<HashMap<DialogueMatchKey, (String, String)>>();
+
+    let mut internal_pick_up_keys = HashSet::new();
+    let mut dropped_and_picked_up_keys = HashSet::new();
+
+    for second_dialogue_row in second_dialogue_rows {
+        let match_key = build_dialogue_match_key(second_dialogue_row);
+
+        if pickup_keys.contains(&match_key) {
+            continue;
+        }
+
+        if let Some((previous_teacher, previous_shift_group)) =
+            previous_shift_assignments.get(&match_key)
+        {
+            let current_teacher =
+                normalize_identifier(&second_dialogue_row.teacher_name).to_ascii_lowercase();
+            let current_shift_group =
+                normalize_identifier(&second_dialogue_row.shift_group).to_ascii_lowercase();
+
+            if previous_teacher != &current_teacher && previous_shift_group == &current_shift_group
+            {
+                internal_pick_up_keys.insert(match_key.clone());
+            }
+
+            if previous_teacher != &current_teacher && previous_shift_group != &current_shift_group
+            {
+                dropped_and_picked_up_keys.insert(match_key);
+            }
+        }
+    }
+
+    let mut consolidated_rows = Vec::new();
+
+    for current_dialogue_row in first_dialogue_rows {
+        let match_key = build_dialogue_match_key(current_dialogue_row);
+
+        if dropped_keys.contains(&match_key) {
+            consolidated_rows.push(DialogueConsolidatedRow {
+                shift_group: current_dialogue_row.shift_group.clone(),
+                shift: current_dialogue_row.shift.clone(),
+                shift_type: "Dropped".to_string(),
+                teacher_name: current_dialogue_row.teacher_name.clone(),
+                start_date: current_dialogue_row.start_date.clone(),
+                end_date: current_dialogue_row.end_date.clone(),
+            });
+        }
+    }
+
+    for current_dialogue_row in second_dialogue_rows {
+        let match_key = build_dialogue_match_key(current_dialogue_row);
+
+        let shift_type = if pickup_keys.contains(&match_key) {
+            "Pickup"
+        } else if internal_pick_up_keys.contains(&match_key) {
+            "Internal Pickup"
+        } else if dropped_and_picked_up_keys.contains(&match_key) {
+            "Dropped & Picked Up"
+        } else {
+            "-"
+        };
+
+        consolidated_rows.push(DialogueConsolidatedRow {
+            shift_group: current_dialogue_row.shift_group.clone(),
+            shift: current_dialogue_row.shift.clone(),
+            shift_type: shift_type.to_string(),
+            teacher_name: current_dialogue_row.teacher_name.clone(),
+            start_date: current_dialogue_row.start_date.clone(),
+            end_date: current_dialogue_row.end_date.clone(),
+        });
+    }
+
+    consolidated_rows
+}
+
 fn find_header_index(headers: &StringRecord, aliases: &[&str]) -> Option<usize> {
     headers.iter().position(|header| {
         let normalized_header = normalize_csv_header(header);
@@ -206,9 +381,11 @@ fn build_dialogue_csv_columns(headers: &StringRecord) -> Result<DialogueCsvColum
         .ok_or_else(|| anyhow::anyhow!("Dialogue CSV is missing a Shift column"))?;
     let shift_group = find_header_index(headers, &["Resource: Shift Group", "Shift Group"])
         .ok_or_else(|| anyhow::anyhow!("Dialogue CSV is missing a Shift Group column"))?;
-    let teacher_name =
-        find_header_index(headers, &["Resource: Resource Name", "Resource Name", "Teacher Name"])
-            .ok_or_else(|| anyhow::anyhow!("Dialogue CSV is missing a Teacher Name column"))?;
+    let teacher_name = find_header_index(
+        headers,
+        &["Resource: Resource Name", "Resource Name", "Teacher Name"],
+    )
+    .ok_or_else(|| anyhow::anyhow!("Dialogue CSV is missing a Teacher Name column"))?;
 
     Ok(DialogueCsvColumns {
         start,
@@ -222,7 +399,12 @@ fn build_dialogue_csv_columns(headers: &StringRecord) -> Result<DialogueCsvColum
 fn build_invoicing_csv_columns(headers: &StringRecord) -> Result<InvoicingCsvColumns, Error> {
     let teacher_name = find_header_index(
         headers,
-        &["Resource: Resource Name", "Resource Name", "Teacher_Name", "Teacher Name"],
+        &[
+            "Resource: Resource Name",
+            "Resource Name",
+            "Teacher_Name",
+            "Teacher Name",
+        ],
     )
     .ok_or_else(|| {
         let cols: Vec<&str> = headers.iter().collect();
@@ -234,19 +416,36 @@ fn build_invoicing_csv_columns(headers: &StringRecord) -> Result<InvoicingCsvCol
     let eligible = find_header_index(headers, &["Eligible_Status", "Eligible Status", "Eligible"]);
     let activity_start = find_header_index(
         headers,
-        &["Activity_Start_Time", "Activity Start Time", "Activity Start", "Start"],
+        &[
+            "Activity_Start_Time",
+            "Activity Start Time",
+            "Activity Start",
+            "Start",
+        ],
     )
     .ok_or_else(|| anyhow::anyhow!("Invoicing CSV is missing an Activity Start column"))?;
     let activity_end = find_header_index(
         headers,
-        &["Activity_End_Time", "Activity End Time", "Activity End", "Finish"],
+        &[
+            "Activity_End_Time",
+            "Activity End Time",
+            "Activity End",
+            "Finish",
+        ],
     )
     .ok_or_else(|| anyhow::anyhow!("Invoicing CSV is missing an Activity End column"))?;
 
-    let shift = ["shift_name_tsm", "Shift_Name", "Shift Name", "Shift: Shift Number", "Shift Number", "Shift"]
-        .iter()
-        .filter_map(|alias| find_header_index(headers, &[*alias]))
-        .collect::<Vec<_>>();
+    let shift = [
+        "shift_name_tsm",
+        "Shift_Name",
+        "Shift Name",
+        "Shift: Shift Number",
+        "Shift Number",
+        "Shift",
+    ]
+    .iter()
+    .filter_map(|alias| find_header_index(headers, &[*alias]))
+    .collect::<Vec<_>>();
 
     if shift.is_empty() {
         return Err(anyhow::anyhow!("Invoicing CSV is missing a Shift column"));
@@ -554,7 +753,7 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
                     tracing::error!("🔥 Failed to clean directory: {}", e);
                 }
             }
-            
+
             tracing::info!("❕ Creating directory.");
             let create_dir_result = create_dir(&directory_path).await;
 
@@ -583,11 +782,12 @@ async fn store_files(multipart: &mut Multipart, date: &str) -> Result<(), Error>
             .to_lowercase();
 
         let name_lower = name.to_lowercase();
-        let file_name = if !extension.is_empty() && !name_lower.ends_with(&format!(".{}", extension)) {
-            format!("{}.{}", name_lower, extension)
-        } else {
-            name_lower
-        };
+        let file_name =
+            if !extension.is_empty() && !name_lower.ends_with(&format!(".{}", extension)) {
+                format!("{}.{}", name_lower, extension)
+            } else {
+                name_lower
+            };
 
         let data = field.bytes().await.unwrap();
 
@@ -703,10 +903,7 @@ async fn consolidate_files(
             .get(invoicing_columns.activity_start)
             .unwrap_or("")
             .trim();
-        let activity_end = row
-            .get(invoicing_columns.activity_end)
-            .unwrap_or("")
-            .trim();
+        let activity_end = row.get(invoicing_columns.activity_end).unwrap_or("").trim();
         let shift = first_non_empty_field(&row, &invoicing_columns.shift);
 
         if teacher_name.is_empty() || activity_start.is_empty() || activity_end.is_empty() {
@@ -790,7 +987,7 @@ async fn consolidate_files(
                     id
                 FROM invoices
                 WHERE teacher_name = $1 AND shift = $2 AND activity_start = $3 AND activity_end = $4
-            "#
+            "#,
         )
         .bind(&teacher_name)
         .bind(&shift)
@@ -908,209 +1105,8 @@ async fn consolidate_files(
     tracing::info!("❕ First dialogue rows: {}", first_dialogue_rows.len());
     tracing::info!("❕ Second dialogue rows: {}", second_dialogue_rows.len());
 
-    let mut consolidated_rows: Vec<DialogueConsolidatedRow> = Vec::new();
-
-    let first_shifts = first_dialogue_rows
-        .iter()
-        .map(|row| row.shift.clone())
-        .collect::<Vec<String>>();
-    let second_shifts = second_dialogue_rows
-        .iter()
-        .map(|row| row.shift.clone())
-        .collect::<Vec<String>>();
-
-    // let taught_shifts = first_shifts
-    //     .iter()
-    //     .filter(|shift| {
-    //         let is_in_second_shifts = second_shifts.contains(shift);
-
-    //         let shift_teacher = first_dialogue_rows
-    //             .iter()
-    //             .find(|row| row.shift == **shift)
-    //             .unwrap()
-    //             .teacher_name
-    //             .clone();
-
-    //         let second_shift_teacher = second_dialogue_rows
-    //             .iter()
-    //             .find(|row| row.shift == **shift)
-    //             .unwrap()
-    //             .teacher_name
-    //             .clone();
-
-    //         let is_same_teacher = shift_teacher == second_shift_teacher;
-
-    //         is_in_second_shifts && is_same_teacher
-    //     })
-    //     .collect::<Vec<&String>>();
-
-    // let dropped_shifts = first_shifts
-    //     .iter()
-    //     .filter(|shift| !second_shifts.contains(shift))
-    //     .collect::<Vec<&String>>();
-
-    // let mut internal_pickups: Vec<InternalPickup> = vec![];
-
-    // for first_dialogue_row in first_dialogue_rows {
-    //     let is_in_second_shifts = second_shifts.contains(&first_dialogue_row.shift);
-
-    //     if is_in_second_shifts {
-    //         let second_dialogue_row = second_dialogue_rows
-    //             .iter()
-    //             .find(|row| row.shift == first_dialogue_row.shift)
-    //             .unwrap();
-
-    //         let shift_teacher = first_dialogue_row.teacher_name.clone();
-    //         let second_shift_teacher = second_dialogue_row.teacher_name.clone();
-
-    //         if shift_teacher != second_shift_teacher {
-    //             let internal_pickup = InternalPickup {
-    //                 shift: first_dialogue_row.shift.clone(),
-    //                 initial_teacher: shift_teacher,
-    //                 new_teacher: second_shift_teacher,
-    //                 shift_group: first_dialogue_row.shift_group.clone(),
-    //             };
-
-    //             internal_pickups.push(internal_pickup);
-    //         }
-    //     }
-    // }
-
-    let dropped_shifts = first_shifts
-        .iter()
-        .filter(|shift| !second_shifts.contains(shift))
-        .collect::<Vec<&String>>();
-    let pick_up_shifts = second_shifts
-        .iter()
-        .filter(|shift| !first_shifts.contains(shift))
-        .collect::<Vec<&String>>();
-
-    let undecided_first_dialog_rows = first_dialogue_rows
-        .iter()
-        .filter(|row| {
-            !dropped_shifts.contains(&&row.shift) && !pick_up_shifts.contains(&&row.shift)
-        })
-        .collect::<Vec<&DialogueRow>>();
-
-    let undecided_second_dialog_rows = second_dialogue_rows
-        .iter()
-        .filter(|row| {
-            !dropped_shifts.contains(&&row.shift) && !pick_up_shifts.contains(&&row.shift)
-        })
-        .collect::<Vec<&DialogueRow>>();
-
-    let previous_shift_teachers = undecided_first_dialog_rows
-        .iter()
-        .map(|row| {
-            (
-                row.shift.clone(),
-                format!("{}:{}", row.teacher_name, row.shift_group),
-            )
-        })
-        .collect::<HashMap<String, String>>();
-
-    let mut internal_pick_up_shifts: Vec<String> = vec![];
-    let mut dropped_and_picked_up_shifts: Vec<String> = vec![];
-
-    for second_dialogue_row in undecided_second_dialog_rows {
-        let previous_shift_assignment = previous_shift_teachers.get(&second_dialogue_row.shift);
-
-        match previous_shift_assignment {
-            Some(previous_shift_assignment) => {
-                let shift_assignment_split =
-                    previous_shift_assignment.split(":").collect::<Vec<_>>();
-
-                let shift_teacher = shift_assignment_split[0];
-                let shift_group = shift_assignment_split[1];
-
-                if shift_teacher != second_dialogue_row.teacher_name
-                    && shift_group == second_dialogue_row.shift_group
-                {
-                    internal_pick_up_shifts.push(second_dialogue_row.shift.clone());
-                }
-
-                if shift_teacher != second_dialogue_row.teacher_name
-                    && shift_group != second_dialogue_row.shift_group
-                {
-                    dropped_and_picked_up_shifts.push(second_dialogue_row.shift.clone());
-                }
-            }
-            None => {}
-        }
-    }
-
-    for current_dialogue_row in first_dialogue_rows {
-        let is_dropped = dropped_shifts.contains(&&current_dialogue_row.shift);
-       
-        let mut consolidated_row = DialogueConsolidatedRow {
-            shift_group: current_dialogue_row.shift_group.clone(),
-            shift: current_dialogue_row.shift.clone(),
-            shift_type: "-".to_string(),
-            teacher_name: current_dialogue_row.teacher_name.clone(),
-            start_date: current_dialogue_row.start_date.clone(),
-            end_date: current_dialogue_row.end_date.clone(),
-        };
-
-        match is_dropped {
-            true => {
-                consolidated_row.shift_type = "Dropped".to_string();
-
-                consolidated_rows.push(consolidated_row);
-            }
-            false => {}
-        }
-    }
-
-    for current_dialogue_row in second_dialogue_rows {
-        let is_pick_up = pick_up_shifts.contains(&&current_dialogue_row.shift);
-        let is_internal_pick_up = internal_pick_up_shifts.contains(&&current_dialogue_row.shift);
-        let is_dropped_and_picked_up =
-            dropped_and_picked_up_shifts.contains(&&current_dialogue_row.shift);
-
-        let mut consolidated_row = DialogueConsolidatedRow {
-            shift_group: current_dialogue_row.shift_group.clone(),
-            shift: current_dialogue_row.shift.clone(),
-            shift_type: "-".to_string(),
-            teacher_name: current_dialogue_row.teacher_name.clone(),
-            start_date: current_dialogue_row.start_date.clone(),
-            end_date: current_dialogue_row.end_date.clone(),
-        };
-
-        match is_pick_up {
-            true => {
-                consolidated_row.shift_type = "Pickup".to_string();
-
-                consolidated_rows.push(consolidated_row);
-
-                continue;
-            }
-            false => {}
-        }
-
-        match is_internal_pick_up {
-            true => {
-                consolidated_row.shift_type = "Internal Pickup".to_string();
-
-                consolidated_rows.push(consolidated_row);
-
-                continue;
-            }
-            false => {}
-        }
-
-        match is_dropped_and_picked_up {
-            true => {
-                consolidated_row.shift_type = "Dropped & Picked Up".to_string();
-
-                consolidated_rows.push(consolidated_row);
-
-                continue;
-            }
-            false => {}
-        }
-
-        consolidated_rows.push(consolidated_row);
-    }
+    let mut consolidated_rows =
+        consolidate_dialogue_rows(&first_dialogue_rows, &second_dialogue_rows);
 
     // let mut first_dialogue_rows_split: HashMap<String, Vec<DialogueRow>> = HashMap::new();
 
@@ -1372,15 +1368,16 @@ async fn consolidate_files(
         let shift_group = consolidated_row.shift_group.clone();
         let shift = consolidated_row.shift.clone();
         let shift_type = consolidated_row.shift_type.clone();
-        let start_date = parse_dialogue_datetime(&consolidated_row.start_date).map_err(|error| {
-            tracing::error!(
-                "🔥 Failed to parse consolidated row start datetime {:?}: {:?}",
-                consolidated_row.start_date,
-                error
-            );
+        let start_date =
+            parse_dialogue_datetime(&consolidated_row.start_date).map_err(|error| {
+                tracing::error!(
+                    "🔥 Failed to parse consolidated row start datetime {:?}: {:?}",
+                    consolidated_row.start_date,
+                    error
+                );
 
-            Error::msg("Failed to parse consolidated row start datetime.")
-        })?;
+                Error::msg("Failed to parse consolidated row start datetime.")
+            })?;
         let end_date = parse_dialogue_datetime(&consolidated_row.end_date).map_err(|error| {
             tracing::error!(
                 "🔥 Failed to parse consolidated row end datetime {:?}: {:?}",
@@ -1409,7 +1406,7 @@ async fn consolidate_files(
             }
             None => {
                 let insert_teacher_id = sqlx::query_scalar::<_, i32>(
-                    "INSERT INTO teachers (name) VALUES ($1) RETURNING id"
+                    "INSERT INTO teachers (name) VALUES ($1) RETURNING id",
                 )
                 .bind(&teacher_name)
                 .fetch_one(&app_state.db)
@@ -1483,4 +1480,81 @@ async fn consolidate_files(
         "skipped_invoices": skipped_invoices,
         "updated_invoices": updated_invoices,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{consolidate_dialogue_rows, normalize_shift_identifier, DialogueRow};
+
+    fn make_row(
+        shift_group: &str,
+        shift: &str,
+        teacher_name: &str,
+        start_date: &str,
+        end_date: &str,
+    ) -> DialogueRow {
+        DialogueRow {
+            shift_group: shift_group.to_string(),
+            shift: shift.to_string(),
+            teacher_name: teacher_name.to_string(),
+            start_date: start_date.to_string(),
+            end_date: end_date.to_string(),
+        }
+    }
+
+    #[test]
+    fn normalizes_numeric_shift_identifiers_from_csv_and_xlsx() {
+        assert_eq!(normalize_shift_identifier("12345"), "12345");
+        assert_eq!(normalize_shift_identifier("12345.0"), "12345");
+        assert_eq!(normalize_shift_identifier("12,345.000"), "12345");
+    }
+
+    #[test]
+    fn does_not_mark_rows_as_dropped_when_shift_only_differs_by_numeric_format() {
+        let first_dialogue_rows = vec![make_row(
+            "Alpha",
+            "12345",
+            "Teacher One",
+            "2026-04-20 08:00:00",
+            "2026-04-20 09:00:00",
+        )];
+        let second_dialogue_rows = vec![make_row(
+            "Alpha",
+            "12345.0",
+            "Teacher One",
+            "2026-04-20 08:00:00",
+            "2026-04-20 09:00:00",
+        )];
+
+        let consolidated_rows =
+            consolidate_dialogue_rows(&first_dialogue_rows, &second_dialogue_rows);
+
+        assert_eq!(consolidated_rows.len(), 1);
+        assert_eq!(consolidated_rows[0].shift_type, "-");
+        assert_eq!(consolidated_rows[0].shift, "12345.0");
+    }
+
+    #[test]
+    fn marks_internal_pickups_after_shift_normalization() {
+        let first_dialogue_rows = vec![make_row(
+            "Alpha",
+            "12345",
+            "Teacher One",
+            "2026-04-20 08:00:00",
+            "2026-04-20 09:00:00",
+        )];
+        let second_dialogue_rows = vec![make_row(
+            "Alpha",
+            "12345.0",
+            "Teacher Two",
+            "2026-04-20 08:00:00",
+            "2026-04-20 09:00:00",
+        )];
+
+        let consolidated_rows =
+            consolidate_dialogue_rows(&first_dialogue_rows, &second_dialogue_rows);
+
+        assert_eq!(consolidated_rows.len(), 1);
+        assert_eq!(consolidated_rows[0].shift_type, "Internal Pickup");
+    }
 }
