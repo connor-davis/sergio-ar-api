@@ -726,6 +726,87 @@ fn build_invoicing_csv_columns(headers: &StringRecord) -> Result<InvoicingCsvCol
     })
 }
 
+fn scan_dialogue_csv_start_dates(
+    file_path: &str,
+) -> Result<(HashMap<NaiveDate, usize>, usize, usize), Error> {
+    let file_contents = fs::read(file_path)?;
+    let file_contents = decode_bytes_to_string(&file_contents);
+    let file_contents = prepare_dialogue_csv_for_parsing(&file_contents);
+    let delimiter = detect_csv_delimiter(&file_contents);
+
+    let mut reader = ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .delimiter(delimiter)
+        .flexible(true)
+        .from_reader(file_contents.as_bytes());
+
+    let headers = reader.headers()?.clone();
+    let columns = build_dialogue_csv_columns(&headers)?;
+
+    let mut counts_by_date = HashMap::new();
+    let mut invalid_datetime_rows = 0usize;
+    let mut total_rows = 0usize;
+
+    for record in reader.records() {
+        let record = record?;
+        total_rows += 1;
+
+        let start = record.get(columns.start).unwrap_or("").trim();
+        let source_starts = collect_source_dialogue_datetimes(start);
+
+        if let Some(source_start) = source_starts.first() {
+            *counts_by_date.entry(source_start.date()).or_insert(0) += 1;
+        } else {
+            invalid_datetime_rows += 1;
+        }
+    }
+
+    Ok((counts_by_date, invalid_datetime_rows, total_rows))
+}
+
+fn log_dialogue_file_date_diagnosis(file_path: &str, process_calendar: NaiveDate) {
+    match scan_dialogue_csv_start_dates(file_path) {
+        Ok((counts_by_date, invalid_datetime_rows, total_rows)) => {
+            let rows_on_process_date = counts_by_date.get(&process_calendar).copied().unwrap_or(0);
+
+            let mut dates = counts_by_date.keys().copied().collect::<Vec<_>>();
+            dates.sort();
+
+            let date_range = match (dates.first(), dates.last()) {
+                (Some(min), Some(max)) => format!("{} to {}", min, max),
+                _ => "unknown".to_string(),
+            };
+
+            let mut top_dates = counts_by_date.into_iter().collect::<Vec<_>>();
+            top_dates.sort_by(|a, b| b.1.cmp(&a.1));
+            let top_dates = top_dates
+                .into_iter()
+                .take(5)
+                .map(|(date, count)| format!("{} ({})", date, count))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            tracing::warn!(
+                "Dialogue file date scan for {}: {} total rows, {} on process date {}, range {}, top start dates: [{}], invalid datetimes: {}",
+                file_path,
+                total_rows,
+                rows_on_process_date,
+                process_calendar,
+                date_range,
+                top_dates,
+                invalid_datetime_rows
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                "Could not scan dialogue dates in {}: {:?}",
+                file_path,
+                error
+            );
+        }
+    }
+}
+
 fn first_non_empty_field(record: &StringRecord, indexes: &[usize]) -> String {
     indexes
         .iter()
@@ -884,6 +965,7 @@ fn load_dialogue_rows_from_csv(
             skipped_invalid_datetime,
             skipped_outside_process_date
         );
+        log_dialogue_file_date_diagnosis(file_path, process_calendar);
     }
 
     tracing::info!(
@@ -1193,6 +1275,21 @@ async fn consolidate_files(
     let second_dialogue_rows = load_dialogue_rows(&dialogue_base_path, 2, process_calendar)?;
 
     tracing::info!("✅ Successfully mapped second dialogue file.");
+
+    if second_dialogue_rows.is_empty() && !first_dialogue_rows.is_empty() {
+        let dialogue_2_csv = format!("{}/dialogue-2.csv", dialogue_base_path);
+        log_dialogue_file_date_diagnosis(&dialogue_2_csv, process_calendar);
+
+        return Err(anyhow::anyhow!(
+            "dialogue-2 has no shifts on process date {} (dialogue-1 has {}). \
+             ASM exports are multi-week schedules: the filename export timestamp is not the shift date. \
+             For example, ASM - DL Scheduled Shifts 2026-05-01-15-00-19.csv is exported on May 1 but contains May 2+ shifts only. \
+             Use a dialogue-2 file that includes shifts dated {}, or run consolidation for the date that dialogue-2 actually contains.",
+            process_calendar,
+            first_dialogue_rows.len(),
+            process_calendar
+        ));
+    }
 
     // Consolidate invoicing file
     tracing::info!("❕ Mapping invoicing file...");
