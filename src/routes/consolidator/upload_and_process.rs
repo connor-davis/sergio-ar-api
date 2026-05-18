@@ -12,8 +12,8 @@ use axum::{
     Json,
 };
 use calamine::{open_workbook, Reader, Xlsx};
-use chrono::{NaiveDate, NaiveDateTime, TimeZone};
-use chrono_tz::{Africa::Johannesburg, America::New_York, Tz};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone};
+use chrono_tz::{Africa::Johannesburg, Tz, UTC};
 use csv::{ReaderBuilder, StringRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -92,7 +92,7 @@ fn source_timezone() -> Tz {
     std::env::var("DIALOGUE_SOURCE_TIMEZONE")
         .ok()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(New_York)
+        .unwrap_or(UTC)
 }
 
 fn app_timezone() -> Tz {
@@ -102,42 +102,33 @@ fn app_timezone() -> Tz {
         .unwrap_or(Johannesburg)
 }
 
-fn localize_in_timezone(naive: NaiveDateTime, timezone: Tz) -> NaiveDateTime {
-    match timezone.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(zoned) => zoned.naive_local(),
-        chrono::LocalResult::Ambiguous(earliest, _) => earliest.naive_local(),
-        chrono::LocalResult::None => {
-            tracing::warn!(
-                "Datetime {:?} is invalid in {}; using naive value unchanged",
-                naive,
-                timezone
-            );
-            naive
-        }
+fn zoned_from_dialogue_source(naive: NaiveDateTime, source: Tz) -> DateTime<Tz> {
+    if source == UTC {
+        return source.from_utc_datetime(&naive);
     }
-}
 
-/// Dialogue CSV/XLSX exports from the US company are wall-clock times in [source_timezone].
-/// Dialogue comparisons and DB storage use [app_timezone] (default Africa/Johannesburg).
-/// Invoicing timestamps are left unchanged (see [parse_invoicing_datetime]).
-fn convert_dialogue_local_to_app_timezone(naive: NaiveDateTime) -> NaiveDateTime {
-    let source = source_timezone();
-    let app = app_timezone();
-    let source_zoned = source.from_local_datetime(&naive);
-    let source_dt = match source_zoned {
+    match source.from_local_datetime(&naive) {
         chrono::LocalResult::Single(dt) => dt,
         chrono::LocalResult::Ambiguous(earliest, _) => earliest,
         chrono::LocalResult::None => {
             tracing::warn!(
-                "Datetime {:?} is invalid in {}; treating as app-local",
+                "Datetime {:?} is invalid in {}; using naive value as UTC",
                 naive,
                 source
             );
-            return localize_in_timezone(naive, app);
+            UTC.from_utc_datetime(&naive)
         }
-    };
+    }
+}
 
-    source_dt.with_timezone(&app).naive_local()
+/// Dialogue CSV/XLSX timestamps are treated as [source_timezone] (default UTC) and stored in
+/// [app_timezone] (default Africa/Johannesburg). Invoicing is unchanged (see [parse_invoicing_datetime]).
+fn convert_dialogue_source_to_app_timezone(naive: NaiveDateTime) -> NaiveDateTime {
+    let source = source_timezone();
+    let app = app_timezone();
+    zoned_from_dialogue_source(naive, source)
+        .with_timezone(&app)
+        .naive_local()
 }
 
 fn parse_process_calendar_date(process_date: &str) -> Result<NaiveDate, Error> {
@@ -167,7 +158,7 @@ fn push_unique_source_datetime(candidates: &mut Vec<NaiveDateTime>, parsed: Naiv
     }
 }
 
-/// Wall-clock values as they appear in the US export, before timezone conversion.
+/// Parsed naive datetimes as they appear in the export (interpreted as UTC by default).
 fn collect_source_dialogue_datetimes(value: &str) -> Vec<NaiveDateTime> {
     let value = value.trim().trim_matches('"');
     let mut candidates = Vec::new();
@@ -190,14 +181,18 @@ fn collect_source_dialogue_datetimes(value: &str) -> Vec<NaiveDateTime> {
 }
 
 fn dialogue_datetime_matches_process_calendar(
-    source_local: NaiveDateTime,
+    source_naive: NaiveDateTime,
     process_calendar: NaiveDate,
 ) -> bool {
-    if source_local.date() == process_calendar {
+    let local = convert_dialogue_source_to_app_timezone(source_naive);
+
+    // Primary: shift falls on the selected business day in local (Johannesburg) time.
+    if local.date() == process_calendar {
         return true;
     }
 
-    convert_dialogue_local_to_app_timezone(source_local).date() == process_calendar
+    // Fallback: CSV date is the UTC calendar day (common in Dialogue exports).
+    source_naive.date() == process_calendar
 }
 
 fn parse_dialogue_datetime(value: &str) -> Result<NaiveDateTime, Error> {
@@ -206,7 +201,7 @@ fn parse_dialogue_datetime(value: &str) -> Result<NaiveDateTime, Error> {
         .next()
         .ok_or_else(|| anyhow::anyhow!("Unsupported dialogue datetime format: {}", value.trim()))?;
 
-    Ok(convert_dialogue_local_to_app_timezone(source))
+    Ok(convert_dialogue_source_to_app_timezone(source))
 }
 
 fn select_dialogue_start_end(
@@ -223,7 +218,7 @@ fn select_dialogue_start_end(
 
     let app_ends = ends
         .iter()
-        .map(|source_end| convert_dialogue_local_to_app_timezone(*source_end))
+        .map(|source_end| convert_dialogue_source_to_app_timezone(*source_end))
         .collect::<Vec<_>>();
 
     for source_start in &starts {
@@ -231,7 +226,7 @@ fn select_dialogue_start_end(
             continue;
         }
 
-        let app_start = convert_dialogue_local_to_app_timezone(*source_start);
+        let app_start = convert_dialogue_source_to_app_timezone(*source_start);
         let app_end = app_ends
             .iter()
             .copied()
@@ -244,7 +239,7 @@ fn select_dialogue_start_end(
 
     let app_starts = starts
         .iter()
-        .map(|source_start| convert_dialogue_local_to_app_timezone(*source_start))
+        .map(|source_start| convert_dialogue_source_to_app_timezone(*source_start))
         .collect::<Vec<_>>();
 
     for source_end in &ends {
@@ -252,7 +247,7 @@ fn select_dialogue_start_end(
             continue;
         }
 
-        let app_end = convert_dialogue_local_to_app_timezone(*source_end);
+        let app_end = convert_dialogue_source_to_app_timezone(*source_end);
         let app_start = app_starts
             .iter()
             .copied()
@@ -1230,7 +1225,7 @@ async fn consolidate_files(
     let process_calendar = parse_process_calendar_date(&process_date_input)?;
 
     tracing::info!(
-        "🕐 Dialogue files (dialogue-1, dialogue-2): {} → {}",
+        "🕐 Dialogue files (dialogue-1, dialogue-2): {} (naive in CSV) → {} (stored/filtered)",
         source_timezone(),
         app_timezone()
     );
@@ -1265,7 +1260,7 @@ async fn consolidate_files(
 
     tracing::info!("❕ Consolidating files...");
 
-    // Consolidate dialogue snapshots (US-local export times → app timezone)
+    // Consolidate dialogue snapshots (UTC export times → local timezone)
     tracing::info!("❕ Mapping first dialogue file (dialogue-1)...");
     let first_dialogue_rows = load_dialogue_rows(&dialogue_base_path, 1, process_calendar)?;
 
@@ -1960,8 +1955,8 @@ mod tests {
     fn parses_dialogue_datetime_with_single_digit_month_day_and_hour() {
         let parsed = parse_dialogue_datetime("5/2/2026 9:00 AM").expect("datetime");
         assert_eq!(parsed.date(), NaiveDate::from_ymd_opt(2026, 5, 2).unwrap());
-        // 09:00 US Eastern (EDT) -> 15:00 Africa/Johannesburg
-        assert_eq!(parsed.hour(), 15);
+        // 09:00 UTC -> 11:00 Africa/Johannesburg (UTC+2)
+        assert_eq!(parsed.hour(), 11);
         assert_eq!(parsed.minute(), 0);
     }
 
@@ -1970,7 +1965,7 @@ mod tests {
         let parsed =
             parse_dialogue_datetime("5/1/2026 11:00 PM").expect("datetime");
         assert_eq!(parsed.date(), NaiveDate::from_ymd_opt(2026, 5, 2).unwrap());
-        assert_eq!(parsed.hour(), 5);
+        assert_eq!(parsed.hour(), 1);
 
         let dir = std::env::temp_dir().join(format!(
             "sergio-ar-dialogue-tz-test-{}",
@@ -2055,7 +2050,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].start_date, "2026-05-01 15:00:00");
+        assert_eq!(rows[0].start_date, "2026-05-01 11:00:00");
     }
 
     #[test]
@@ -2171,8 +2166,8 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].shift, "T-5412533");
         assert_eq!(rows[0].teacher_name, "Babalwa Magongo");
-        assert_eq!(rows[0].start_date, "2026-05-02 15:00:00");
-        assert_eq!(rows[0].end_date, "2026-05-02 17:00:00");
+        assert_eq!(rows[0].start_date, "2026-05-02 11:00:00");
+        assert_eq!(rows[0].end_date, "2026-05-02 13:00:00");
     }
 
     #[test]
