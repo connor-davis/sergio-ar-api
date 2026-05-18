@@ -117,9 +117,10 @@ fn localize_in_timezone(naive: NaiveDateTime, timezone: Tz) -> NaiveDateTime {
     }
 }
 
-/// CSV exports from the US company are wall-clock times in [source_timezone].
-/// All comparisons and DB storage use [app_timezone] (default Africa/Johannesburg).
-fn convert_source_local_to_app_timezone(naive: NaiveDateTime) -> NaiveDateTime {
+/// Dialogue CSV/XLSX exports from the US company are wall-clock times in [source_timezone].
+/// Dialogue comparisons and DB storage use [app_timezone] (default Africa/Johannesburg).
+/// Invoicing timestamps are left unchanged (see [parse_invoicing_datetime]).
+fn convert_dialogue_local_to_app_timezone(naive: NaiveDateTime) -> NaiveDateTime {
     let source = source_timezone();
     let app = app_timezone();
     let source_zoned = source.from_local_datetime(&naive);
@@ -163,8 +164,8 @@ const DIALOGUE_DATETIME_FORMATS: &[&str] = &[
     "%Y-%m-%d %H:%M",
 ];
 
-fn push_unique_datetime(candidates: &mut Vec<NaiveDateTime>, parsed: NaiveDateTime) {
-    let parsed = convert_source_local_to_app_timezone(parsed);
+fn push_unique_dialogue_datetime(candidates: &mut Vec<NaiveDateTime>, parsed: NaiveDateTime) {
+    let parsed = convert_dialogue_local_to_app_timezone(parsed);
 
     if !candidates.iter().any(|existing| *existing == parsed) {
         candidates.push(parsed);
@@ -177,16 +178,16 @@ fn dialogue_datetime_candidates(value: &str) -> Vec<NaiveDateTime> {
 
     for format in DIALOGUE_DATETIME_FORMATS {
         if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
-            push_unique_datetime(&mut candidates, parsed);
+            push_unique_dialogue_datetime(&mut candidates, parsed);
         }
     }
 
     if let Some(parsed) = parse_dialogue_datetime_flexible(value, false) {
-        push_unique_datetime(&mut candidates, parsed);
+        push_unique_dialogue_datetime(&mut candidates, parsed);
     }
 
     if let Some(parsed) = parse_dialogue_datetime_flexible(value, true) {
-        push_unique_datetime(&mut candidates, parsed);
+        push_unique_dialogue_datetime(&mut candidates, parsed);
     }
 
     candidates
@@ -341,7 +342,7 @@ fn parse_invoicing_datetime(value: &str) -> Result<NaiveDateTime, Error> {
 
     for format in supported_formats {
         if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
-            return Ok(convert_source_local_to_app_timezone(parsed));
+            return Ok(parsed);
         }
     }
 
@@ -1104,10 +1105,11 @@ async fn consolidate_files(
     let process_date = parse_process_date(&process_date)?;
 
     tracing::info!(
-        "🕐 Consolidating with source timezone {} → app timezone {}",
+        "🕐 Dialogue files (dialogue-1, dialogue-2): {} → {}",
         source_timezone(),
         app_timezone()
     );
+    tracing::info!("🕐 Invoicing report: timestamps used as-is (no timezone conversion)");
 
     tracing::info!("✅ Successfully opened all dialogue files.");
 
@@ -1138,14 +1140,13 @@ async fn consolidate_files(
 
     tracing::info!("❕ Consolidating files...");
 
-    // Consolidate first dialogue file
-    tracing::info!("❕ Mapping first dialogue file...");
+    // Consolidate dialogue snapshots (US-local export times → app timezone)
+    tracing::info!("❕ Mapping first dialogue file (dialogue-1)...");
     let first_dialogue_rows = load_dialogue_rows(&dialogue_base_path, 1, process_date)?;
 
     tracing::info!("✅ Successfully mapped first dialogue file.");
 
-    // Consolidate second dialogue file
-    tracing::info!("❕ Mapping second dialogue file...");
+    tracing::info!("❕ Mapping second dialogue file (dialogue-2)...");
     let second_dialogue_rows = load_dialogue_rows(&dialogue_base_path, 2, process_date)?;
 
     tracing::info!("✅ Successfully mapped second dialogue file.");
