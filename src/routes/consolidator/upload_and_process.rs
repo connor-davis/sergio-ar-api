@@ -12,7 +12,8 @@ use axum::{
     Json,
 };
 use calamine::{open_workbook, Reader, Xlsx};
-use chrono::{Datelike, NaiveDateTime};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, TimeZone};
+use chrono_tz::{Africa::Johannesburg, America::New_York, Tz};
 use csv::{ReaderBuilder, StringRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -87,20 +88,64 @@ struct DialogueMatchKey {
     end_date: String,
 }
 
-fn parse_process_date(process_date: &str) -> Result<NaiveDateTime, Error> {
-    let process_date_split = process_date.split("-").collect::<Vec<_>>();
-    let process_date_day = process_date_split[2];
-    let process_date_month = process_date_split[1];
-    let process_date_year = process_date_split[0];
+fn source_timezone() -> Tz {
+    std::env::var("DIALOGUE_SOURCE_TIMEZONE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(New_York)
+}
 
-    NaiveDateTime::parse_from_str(
-        &format!(
-            "{}/{}/{} 00:00:00",
-            process_date_day, process_date_month, process_date_year
-        ),
-        "%d/%m/%Y %H:%M:%S",
-    )
-    .map_err(Error::from)
+fn app_timezone() -> Tz {
+    std::env::var("APP_TIMEZONE")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(Johannesburg)
+}
+
+fn localize_in_timezone(naive: NaiveDateTime, timezone: Tz) -> NaiveDateTime {
+    match timezone.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(zoned) => zoned.naive_local(),
+        chrono::LocalResult::Ambiguous(earliest, _) => earliest.naive_local(),
+        chrono::LocalResult::None => {
+            tracing::warn!(
+                "Datetime {:?} is invalid in {}; using naive value unchanged",
+                naive,
+                timezone
+            );
+            naive
+        }
+    }
+}
+
+/// CSV exports from the US company are wall-clock times in [source_timezone].
+/// All comparisons and DB storage use [app_timezone] (default Africa/Johannesburg).
+fn convert_source_local_to_app_timezone(naive: NaiveDateTime) -> NaiveDateTime {
+    let source = source_timezone();
+    let app = app_timezone();
+    let source_zoned = source.from_local_datetime(&naive);
+    let source_dt = match source_zoned {
+        chrono::LocalResult::Single(dt) => dt,
+        chrono::LocalResult::Ambiguous(earliest, _) => earliest,
+        chrono::LocalResult::None => {
+            tracing::warn!(
+                "Datetime {:?} is invalid in {}; treating as app-local",
+                naive,
+                source
+            );
+            return localize_in_timezone(naive, app);
+        }
+    };
+
+    source_dt.with_timezone(&app).naive_local()
+}
+
+fn parse_process_date(process_date: &str) -> Result<NaiveDateTime, Error> {
+    let date = NaiveDate::parse_from_str(process_date, "%Y-%m-%d")?;
+    let midnight = date
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| anyhow::anyhow!("Invalid process date: {}", process_date))?;
+
+    Ok(localize_in_timezone(midnight, app_timezone()))
 }
 
 const DIALOGUE_DATETIME_FORMATS: &[&str] = &[
@@ -119,6 +164,8 @@ const DIALOGUE_DATETIME_FORMATS: &[&str] = &[
 ];
 
 fn push_unique_datetime(candidates: &mut Vec<NaiveDateTime>, parsed: NaiveDateTime) {
+    let parsed = convert_source_local_to_app_timezone(parsed);
+
     if !candidates.iter().any(|existing| *existing == parsed) {
         candidates.push(parsed);
     }
@@ -294,7 +341,7 @@ fn parse_invoicing_datetime(value: &str) -> Result<NaiveDateTime, Error> {
 
     for format in supported_formats {
         if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
-            return Ok(parsed);
+            return Ok(convert_source_local_to_app_timezone(parsed));
         }
     }
 
@@ -1056,6 +1103,12 @@ async fn consolidate_files(
 
     let process_date = parse_process_date(&process_date)?;
 
+    tracing::info!(
+        "🕐 Consolidating with source timezone {} → app timezone {}",
+        source_timezone(),
+        app_timezone()
+    );
+
     tracing::info!("✅ Successfully opened all dialogue files.");
 
     let invoicing_file_contents = fs::read(&invoicing_file_path)?;
@@ -1772,8 +1825,46 @@ mod tests {
     fn parses_dialogue_datetime_with_single_digit_month_day_and_hour() {
         let parsed = parse_dialogue_datetime("5/2/2026 9:00 AM").expect("datetime");
         assert_eq!(parsed.date(), NaiveDate::from_ymd_opt(2026, 5, 2).unwrap());
-        assert_eq!(parsed.hour(), 9);
+        // 09:00 US Eastern (EDT) -> 15:00 Africa/Johannesburg
+        assert_eq!(parsed.hour(), 15);
         assert_eq!(parsed.minute(), 0);
+    }
+
+    #[test]
+    fn us_late_evening_shift_falls_on_next_day_in_johannesburg() {
+        let parsed =
+            parse_dialogue_datetime("5/1/2026 11:00 PM").expect("datetime");
+        assert_eq!(parsed.date(), NaiveDate::from_ymd_opt(2026, 5, 2).unwrap());
+        assert_eq!(parsed.hour(), 5);
+
+        let dir = std::env::temp_dir().join(format!(
+            "sergio-ar-dialogue-tz-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("dialogue-2.csv");
+        std::fs::write(
+            &file_path,
+            "Start,Finish,Shift: Shift Number,Resource: Shift Group,Resource: Resource Name,Day of Week\n\
+             5/1/2026 11:00 PM,5/2/2026 1:00 AM,T-1,Group,Teacher,Saturday\n",
+        )
+        .unwrap();
+
+        let rows_may_1 = load_dialogue_rows_from_csv(
+            file_path.to_str().unwrap(),
+            parse_process_date("2026-05-01").unwrap(),
+        )
+        .expect("rows");
+        let rows_may_2 = load_dialogue_rows_from_csv(
+            file_path.to_str().unwrap(),
+            parse_process_date("2026-05-02").unwrap(),
+        )
+        .expect("rows");
+
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(rows_may_1.len(), 0);
+        assert_eq!(rows_may_2.len(), 1);
     }
 
     #[test]
@@ -1829,7 +1920,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].start_date, "2026-05-01 09:00:00");
+        assert_eq!(rows[0].start_date, "2026-05-01 15:00:00");
     }
 
     #[test]
@@ -1945,8 +2036,8 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].shift, "T-5412533");
         assert_eq!(rows[0].teacher_name, "Babalwa Magongo");
-        assert_eq!(rows[0].start_date, "2026-05-02 09:00:00");
-        assert_eq!(rows[0].end_date, "2026-05-02 11:00:00");
+        assert_eq!(rows[0].start_date, "2026-05-02 15:00:00");
+        assert_eq!(rows[0].end_date, "2026-05-02 17:00:00");
     }
 
     #[test]
