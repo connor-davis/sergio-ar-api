@@ -107,7 +107,13 @@ fn parse_dialogue_datetime(value: &str) -> Result<NaiveDateTime, Error> {
     let value = value.trim().trim_matches('"');
     let supported_formats = [
         "%m/%d/%Y %I:%M %p",
+        "%m/%d/%Y %I:%M:%S %p",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%Y %H:%M:%S",
+        "%d/%m/%Y %I:%M %p",
+        "%d/%m/%Y %I:%M:%S %p",
         "%Y/%m/%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M",
     ];
@@ -118,10 +124,81 @@ fn parse_dialogue_datetime(value: &str) -> Result<NaiveDateTime, Error> {
         }
     }
 
+    if let Some(parsed) = parse_dialogue_datetime_flexible(value) {
+        return Ok(parsed);
+    }
+
     Err(anyhow::anyhow!(
         "Unsupported dialogue datetime format: {}",
         value
     ))
+}
+
+fn parse_dialogue_datetime_flexible(value: &str) -> Option<NaiveDateTime> {
+    let parts: Vec<&str> = value.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let date_parts: Vec<&str> = parts[0].split('/').collect();
+    if date_parts.len() != 3 {
+        return None;
+    }
+
+    let month: u32 = date_parts[0].parse().ok()?;
+    let day: u32 = date_parts[1].parse().ok()?;
+    let year: i32 = date_parts[2].parse().ok()?;
+
+    let (hour, minute, second) = if parts.len() >= 3 && parts[2].eq_ignore_ascii_case("AM")
+        || parts[2].eq_ignore_ascii_case("PM")
+    {
+        let time_parts: Vec<&str> = parts[1].split(':').collect();
+        if time_parts.len() < 2 {
+            return None;
+        }
+
+        let mut hour: u32 = time_parts[0].parse().ok()?;
+        let minute: u32 = time_parts[1].parse().ok()?;
+        let second = time_parts
+            .get(2)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+
+        if parts[2].eq_ignore_ascii_case("PM") && hour < 12 {
+            hour += 12;
+        } else if parts[2].eq_ignore_ascii_case("AM") && hour == 12 {
+            hour = 0;
+        }
+
+        (hour, minute, second)
+    } else {
+        let time_parts: Vec<&str> = parts[1].split(':').collect();
+        if time_parts.len() < 2 {
+            return None;
+        }
+
+        (
+            time_parts[0].parse().ok()?,
+            time_parts[1].parse().ok()?,
+            time_parts
+                .get(2)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0),
+        )
+    };
+
+    NaiveDateTime::parse_from_str(
+        &format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            year, month, day, hour, minute, second
+        ),
+        "%Y-%m-%d %H:%M:%S",
+    )
+    .ok()
+}
+
+fn format_dialogue_datetime(parsed: NaiveDateTime) -> String {
+    parsed.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 fn is_same_day(left: NaiveDateTime, right: NaiveDateTime) -> bool {
@@ -195,10 +272,26 @@ fn normalize_csv_header(header: &str) -> String {
 }
 
 fn preprocess_malformed_csv(contents: &str) -> String {
-    // Simple approach: remove all quotes from the CSV content
-    // This handles both malformed CSV with extra quotes and normal quoted CSV
-    // uniformly by stripping all quote characters.
+    // Excel dialogue exports wrap the entire row in quotes and escape inner quotes
+    // as doubled quotes (e.g. "Start,""Finish"",""Shift...""). Stripping all quotes
+    // yields a comma-separated row the CSV reader can split reliably.
     contents.replace('"', "")
+}
+
+fn prepare_dialogue_csv_for_parsing(contents: &str) -> String {
+    let mut reader = ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .delimiter(detect_csv_delimiter(contents))
+        .flexible(true)
+        .from_reader(contents.as_bytes());
+
+    if let Ok(headers) = reader.headers() {
+        if headers.len() >= 5 && build_dialogue_csv_columns(headers).is_ok() {
+            return contents.to_string();
+        }
+    }
+
+    preprocess_malformed_csv(contents)
 }
 
 fn normalize_identifier(value: &str) -> String {
@@ -238,7 +331,7 @@ fn normalize_shift_identifier(value: &str) -> String {
 
 fn canonicalize_dialogue_datetime(value: &str) -> String {
     match parse_dialogue_datetime(value) {
-        Ok(parsed) => parsed.format("%Y-%m-%d %H:%M:%S").to_string(),
+        Ok(parsed) => format_dialogue_datetime(parsed),
         Err(_) => normalize_identifier(value).to_ascii_lowercase(),
     }
 }
@@ -476,12 +569,8 @@ fn load_dialogue_rows_from_csv(
 ) -> Result<Vec<DialogueRow>, Error> {
     let file_contents = fs::read(file_path)?;
     let file_contents = decode_bytes_to_string(&file_contents);
-
-    // Preprocess to remove all quotes
-    let file_contents = preprocess_malformed_csv(&file_contents);
-
-    // Always use comma as delimiter
-    let delimiter = b',';
+    let file_contents = prepare_dialogue_csv_for_parsing(&file_contents);
+    let delimiter = detect_csv_delimiter(&file_contents);
 
     tracing::info!(
         "📄 Parsing dialogue CSV {} using delimiter {:?}",
@@ -574,11 +663,17 @@ fn load_dialogue_rows_from_csv(
                 shift_group: shift_group.to_string(),
                 shift: shift.to_string(),
                 teacher_name: teacher_name.to_string(),
-                start_date: start.to_string(),
-                end_date: finish.to_string(),
+                start_date: format_dialogue_datetime(start_date),
+                end_date: format_dialogue_datetime(end_date),
             });
         }
     }
+
+    tracing::info!(
+        "📄 Loaded {} dialogue rows from {}",
+        rows.len(),
+        file_path
+    );
 
     Ok(rows)
 }
@@ -655,12 +750,18 @@ fn load_dialogue_rows_from_xlsx(
                     shift_group: shift_group_temp.clone(),
                     shift: shift_temp.clone(),
                     teacher_name: teacher_name_temp.clone(),
-                    start_date: start_date_temp.clone(),
-                    end_date: end_date_temp.clone(),
+                    start_date: format_dialogue_datetime(start_date),
+                    end_date: format_dialogue_datetime(end_date),
                 });
             }
         }
     }
+
+    tracing::info!(
+        "📄 Loaded {} dialogue rows from {}",
+        rows.len(),
+        file_path
+    );
 
     Ok(rows)
 }
@@ -1484,7 +1585,14 @@ async fn consolidate_files(
 
 #[cfg(test)]
 mod tests {
-    use super::{consolidate_dialogue_rows, normalize_shift_identifier, DialogueRow};
+    use chrono::{NaiveDate, Timelike};
+
+    use super::{
+        build_dialogue_csv_columns, consolidate_dialogue_rows, load_dialogue_rows_from_csv,
+        normalize_shift_identifier, parse_dialogue_datetime, parse_process_date,
+        preprocess_malformed_csv, DialogueRow,
+    };
+    use csv::ReaderBuilder;
 
     fn make_row(
         shift_group: &str,
@@ -1532,6 +1640,144 @@ mod tests {
         assert_eq!(consolidated_rows.len(), 1);
         assert_eq!(consolidated_rows[0].shift_type, "-");
         assert_eq!(consolidated_rows[0].shift, "12345.0");
+    }
+
+    #[test]
+    fn parses_dialogue_datetime_with_single_digit_month_day_and_hour() {
+        let parsed = parse_dialogue_datetime("5/2/2026 9:00 AM").expect("datetime");
+        assert_eq!(parsed.date(), NaiveDate::from_ymd_opt(2026, 5, 2).unwrap());
+        assert_eq!(parsed.hour(), 9);
+        assert_eq!(parsed.minute(), 0);
+    }
+
+    #[test]
+    fn parses_dialogue_export_csv_headers_and_row() {
+        let contents = r#""Start,""Finish"",""Shift: Shift Number"",""Resource: Shift Group"",""Resource: Resource Name"",""Day of Week"""#
+            .to_string()
+            + "\n"
+            + r#""5/2/2026 9:00 AM,""5/2/2026 11:00 AM"",""T-5412533"",""JEN 4 - PM"",""Babalwa Magongo"",""Saturday"""#;
+
+        let preprocessed = preprocess_malformed_csv(&contents);
+        let mut reader = ReaderBuilder::new()
+            .trim(csv::Trim::All)
+            .delimiter(b',')
+            .flexible(true)
+            .from_reader(preprocessed.as_bytes());
+
+        let headers = reader.headers().unwrap().clone();
+        let columns = build_dialogue_csv_columns(&headers).expect("columns");
+
+        let record = reader.records().next().unwrap().unwrap();
+        assert_eq!(record.get(columns.start).unwrap(), "5/2/2026 9:00 AM");
+        assert_eq!(record.get(columns.finish).unwrap(), "5/2/2026 11:00 AM");
+        assert_eq!(record.get(columns.shift).unwrap(), "T-5412533");
+        assert_eq!(
+            record.get(columns.shift_group).unwrap(),
+            "JEN 4 - PM"
+        );
+        assert_eq!(
+            record.get(columns.teacher_name).unwrap(),
+            "Babalwa Magongo"
+        );
+    }
+
+    #[test]
+    fn prepare_dialogue_csv_accepts_excel_export_format() {
+        let contents = r#""Start,""Finish"",""Shift: Shift Number"",""Resource: Shift Group"",""Resource: Resource Name"",""Day of Week"""#
+            .to_string()
+            + "\n"
+            + r#""5/2/2026 9:00 AM,""5/2/2026 11:00 AM"",""T-5412533"",""JEN 4 - PM"",""Babalwa Magongo"",""Saturday"""#;
+
+        let prepared = super::prepare_dialogue_csv_for_parsing(&contents);
+        let mut reader = ReaderBuilder::new()
+            .trim(csv::Trim::All)
+            .delimiter(b',')
+            .flexible(true)
+            .from_reader(prepared.as_bytes());
+
+        let headers = reader.headers().unwrap();
+        assert_eq!(headers.len(), 6);
+        build_dialogue_csv_columns(headers).expect("dialogue columns");
+    }
+
+    #[test]
+    fn identical_export_rows_match_across_two_dialogue_snapshots() {
+        let row = make_row(
+            "JEN 4 - PM",
+            "T-5412533",
+            "Babalwa Magongo",
+            "5/2/2026 9:00 AM",
+            "5/2/2026 11:00 AM",
+        );
+        let first = vec![row.clone()];
+        let second = vec![row];
+
+        let consolidated = consolidate_dialogue_rows(&first, &second);
+        assert_eq!(consolidated.len(), 1);
+        assert_eq!(consolidated[0].shift_type, "-");
+        assert!(
+            consolidated
+                .iter()
+                .all(|entry| entry.shift_type != "Dropped"),
+            "expected no dropped rows when snapshots match"
+        );
+    }
+
+    #[test]
+    fn loads_dialogue_rows_from_export_style_csv() {
+        let dir = std::env::temp_dir().join(format!(
+            "sergio-ar-dialogue-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("dialogue-1.csv");
+        std::fs::write(
+            &file_path,
+            r#""Start,""Finish"",""Shift: Shift Number"",""Resource: Shift Group"",""Resource: Resource Name"",""Day of Week"""#
+                .to_string()
+                + "\n"
+                + r#""5/2/2026 9:00 AM,""5/2/2026 11:00 AM"",""T-5412533"",""JEN 4 - PM"",""Babalwa Magongo"",""Saturday"""#,
+        )
+        .unwrap();
+
+        let process_date = parse_process_date("2026-05-02").unwrap();
+        let rows = load_dialogue_rows_from_csv(
+            file_path.to_str().unwrap(),
+            process_date,
+        )
+        .expect("rows");
+
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].shift, "T-5412533");
+        assert_eq!(rows[0].teacher_name, "Babalwa Magongo");
+        assert_eq!(rows[0].start_date, "2026-05-02 09:00:00");
+        assert_eq!(rows[0].end_date, "2026-05-02 11:00:00");
+    }
+
+    #[test]
+    fn matching_snapshots_with_different_datetime_strings_are_not_marked_dropped() {
+        let first_dialogue_rows = vec![make_row(
+            "JEN 4 - PM",
+            "T-5412533",
+            "Babalwa Magongo",
+            "5/2/2026 9:00 AM",
+            "5/2/2026 11:00 AM",
+        )];
+        let second_dialogue_rows = vec![make_row(
+            "JEN 4 - PM",
+            "T-5412533",
+            "Babalwa Magongo",
+            "2026-05-02 09:00:00",
+            "2026-05-02 11:00:00",
+        )];
+
+        let consolidated =
+            consolidate_dialogue_rows(&first_dialogue_rows, &second_dialogue_rows);
+
+        assert_eq!(consolidated.len(), 1);
+        assert_eq!(consolidated[0].shift_type, "-");
     }
 
     #[test]
