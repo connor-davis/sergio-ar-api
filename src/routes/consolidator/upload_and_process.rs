@@ -103,38 +103,104 @@ fn parse_process_date(process_date: &str) -> Result<NaiveDateTime, Error> {
     .map_err(Error::from)
 }
 
-fn parse_dialogue_datetime(value: &str) -> Result<NaiveDateTime, Error> {
-    let value = value.trim().trim_matches('"');
-    let supported_formats = [
-        "%m/%d/%Y %I:%M %p",
-        "%m/%d/%Y %I:%M:%S %p",
-        "%m/%d/%Y %H:%M",
-        "%m/%d/%Y %H:%M:%S",
-        "%d/%m/%Y %I:%M %p",
-        "%d/%m/%Y %I:%M:%S %p",
-        "%Y/%m/%d %H:%M",
-        "%Y/%m/%d %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
-    ];
+const DIALOGUE_DATETIME_FORMATS: &[&str] = &[
+    "%m/%d/%Y %I:%M %p",
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%Y %H:%M:%S",
+    "%d/%m/%Y %I:%M %p",
+    "%d/%m/%Y %I:%M:%S %p",
+    "%d/%m/%Y %H:%M",
+    "%d/%m/%Y %H:%M:%S",
+    "%Y/%m/%d %H:%M",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+];
 
-    for format in supported_formats {
+fn push_unique_datetime(candidates: &mut Vec<NaiveDateTime>, parsed: NaiveDateTime) {
+    if !candidates.iter().any(|existing| *existing == parsed) {
+        candidates.push(parsed);
+    }
+}
+
+fn dialogue_datetime_candidates(value: &str) -> Vec<NaiveDateTime> {
+    let value = value.trim().trim_matches('"');
+    let mut candidates = Vec::new();
+
+    for format in DIALOGUE_DATETIME_FORMATS {
         if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
-            return Ok(parsed);
+            push_unique_datetime(&mut candidates, parsed);
         }
     }
 
-    if let Some(parsed) = parse_dialogue_datetime_flexible(value) {
-        return Ok(parsed);
+    if let Some(parsed) = parse_dialogue_datetime_flexible(value, false) {
+        push_unique_datetime(&mut candidates, parsed);
     }
 
-    Err(anyhow::anyhow!(
-        "Unsupported dialogue datetime format: {}",
-        value
-    ))
+    if let Some(parsed) = parse_dialogue_datetime_flexible(value, true) {
+        push_unique_datetime(&mut candidates, parsed);
+    }
+
+    candidates
 }
 
-fn parse_dialogue_datetime_flexible(value: &str) -> Option<NaiveDateTime> {
+fn parse_dialogue_datetime(value: &str) -> Result<NaiveDateTime, Error> {
+    dialogue_datetime_candidates(value)
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Unsupported dialogue datetime format: {}", value.trim()))
+}
+
+fn select_dialogue_start_end(
+    start: &str,
+    finish: &str,
+    process_date: NaiveDateTime,
+) -> Option<(NaiveDateTime, NaiveDateTime)> {
+    let starts = dialogue_datetime_candidates(start);
+    let ends = dialogue_datetime_candidates(finish);
+
+    if starts.is_empty() || ends.is_empty() {
+        return None;
+    }
+
+    let matching_starts = starts
+        .iter()
+        .filter(|start_date| is_same_day(**start_date, process_date))
+        .copied()
+        .collect::<Vec<_>>();
+    let matching_ends = ends
+        .iter()
+        .filter(|end_date| is_same_day(**end_date, process_date))
+        .copied()
+        .collect::<Vec<_>>();
+
+    if let Some(start_date) = matching_starts.first().copied() {
+        let end_date = ends
+            .iter()
+            .copied()
+            .filter(|end_date| *end_date >= start_date)
+            .min_by_key(|end_date| *end_date - start_date)
+            .or_else(|| ends.first().copied())?;
+
+        return Some((start_date, end_date));
+    }
+
+    if let Some(end_date) = matching_ends.first().copied() {
+        let start_date = starts
+            .iter()
+            .copied()
+            .filter(|start_date| *start_date <= end_date)
+            .max()
+            .or_else(|| starts.first().copied())?;
+
+        return Some((start_date, end_date));
+    }
+
+    None
+}
+
+fn parse_dialogue_datetime_flexible(value: &str, swap_month_and_day: bool) -> Option<NaiveDateTime> {
     let parts: Vec<&str> = value.split_whitespace().collect();
     if parts.len() < 2 {
         return None;
@@ -145,9 +211,19 @@ fn parse_dialogue_datetime_flexible(value: &str) -> Option<NaiveDateTime> {
         return None;
     }
 
-    let month: u32 = date_parts[0].parse().ok()?;
-    let day: u32 = date_parts[1].parse().ok()?;
+    let first: u32 = date_parts[0].parse().ok()?;
+    let second: u32 = date_parts[1].parse().ok()?;
     let year: i32 = date_parts[2].parse().ok()?;
+
+    let (month, day) = if swap_month_and_day {
+        (second, first)
+    } else {
+        (first, second)
+    };
+
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
 
     let (hour, minute, second) = if parts.len() >= 3 && parts[2].eq_ignore_ascii_case("AM")
         || parts[2].eq_ignore_ascii_case("PM")
@@ -278,20 +354,55 @@ fn preprocess_malformed_csv(contents: &str) -> String {
     contents.replace('"', "")
 }
 
-fn prepare_dialogue_csv_for_parsing(contents: &str) -> String {
+fn is_excel_dialogue_export(contents: &str) -> bool {
+    contents.contains("\"\"Finish\"\"")
+        || contents.contains("\"\"Start\"\"")
+        || contents.contains(",\"\"")
+}
+
+fn dialogue_csv_splits_cleanly(contents: &str, delimiter: u8) -> bool {
     let mut reader = ReaderBuilder::new()
         .trim(csv::Trim::All)
-        .delimiter(detect_csv_delimiter(contents))
+        .delimiter(delimiter)
         .flexible(true)
         .from_reader(contents.as_bytes());
 
-    if let Ok(headers) = reader.headers() {
-        if headers.len() >= 5 && build_dialogue_csv_columns(headers).is_ok() {
-            return contents.to_string();
-        }
+    let headers = match reader.headers() {
+        Ok(headers) => headers,
+        Err(_) => return false,
+    };
+
+    if headers.len() < 5 || build_dialogue_csv_columns(headers).is_err() {
+        return false;
     }
 
-    preprocess_malformed_csv(contents)
+    let expected_columns = headers.len();
+
+    match reader.records().next() {
+        Some(Ok(record)) => record.len() >= expected_columns.saturating_sub(1),
+        Some(Err(_)) => false,
+        None => true,
+    }
+}
+
+fn prepare_dialogue_csv_for_parsing(contents: &str) -> String {
+    if is_excel_dialogue_export(contents) {
+        return preprocess_malformed_csv(contents);
+    }
+
+    let delimiter = detect_csv_delimiter(contents);
+
+    if dialogue_csv_splits_cleanly(contents, delimiter) {
+        return contents.to_string();
+    }
+
+    let preprocessed = preprocess_malformed_csv(contents);
+
+    if dialogue_csv_splits_cleanly(&preprocessed, delimiter) {
+        preprocessed
+    } else {
+        contents.to_string()
+    }
 }
 
 fn normalize_identifier(value: &str) -> String {
@@ -588,6 +699,9 @@ fn load_dialogue_rows_from_csv(
     let columns = build_dialogue_csv_columns(&headers)?;
 
     let mut rows = Vec::new();
+    let mut skipped_missing_columns = 0usize;
+    let mut skipped_invalid_datetime = 0usize;
+    let mut skipped_outside_process_date = 0usize;
 
     for (index, record) in reader.records().enumerate() {
         let record = match record {
@@ -615,58 +729,70 @@ fn load_dialogue_rows_from_csv(
             || shift_group.is_empty()
             || teacher_name.is_empty()
         {
-            tracing::warn!(
-                "Skipping dialogue CSV row {} in {} due to missing required columns",
-                index + 2,
-                file_path
-            );
+            skipped_missing_columns += 1;
+            if skipped_missing_columns <= 3 {
+                tracing::warn!(
+                    "Skipping dialogue CSV row {} in {} due to missing required columns",
+                    index + 2,
+                    file_path
+                );
+            }
             continue;
         }
 
-        let start_date_res = parse_dialogue_datetime(start);
-        let end_date_res = parse_dialogue_datetime(finish);
-
-        let (start_date, end_date) = match (start_date_res, end_date_res) {
-            (Ok(start_date), Ok(end_date)) => (start_date, end_date),
-            (Err(start_error), Err(end_error)) => {
-                tracing::warn!(
-                    "Skipping dialogue CSV row {} in {} due to invalid start and finish datetimes: {:?}, {:?}",
-                    index + 2,
-                    file_path,
-                    start_error,
-                    end_error
-                );
-                continue;
+        let Some((start_date, end_date)) = select_dialogue_start_end(start, finish, process_date)
+        else {
+            if dialogue_datetime_candidates(start).is_empty()
+                || dialogue_datetime_candidates(finish).is_empty()
+            {
+                skipped_invalid_datetime += 1;
+                if skipped_invalid_datetime <= 3 {
+                    tracing::warn!(
+                        "Skipping dialogue CSV row {} in {} due to invalid start/finish datetimes: start={:?}, finish={:?}",
+                        index + 2,
+                        file_path,
+                        start,
+                        finish
+                    );
+                }
+            } else {
+                skipped_outside_process_date += 1;
             }
-            (Err(error), _) => {
-                tracing::warn!(
-                    "Skipping dialogue CSV row {} in {} due to invalid start datetime: {:?}",
-                    index + 2,
-                    file_path,
-                    error
-                );
-                continue;
-            }
-            (_, Err(error)) => {
-                tracing::warn!(
-                    "Skipping dialogue CSV row {} in {} due to invalid finish datetime: {:?}",
-                    index + 2,
-                    file_path,
-                    error
-                );
-                continue;
-            }
+            continue;
         };
 
-        if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
-            rows.push(DialogueRow {
-                shift_group: shift_group.to_string(),
-                shift: shift.to_string(),
-                teacher_name: teacher_name.to_string(),
-                start_date: format_dialogue_datetime(start_date),
-                end_date: format_dialogue_datetime(end_date),
-            });
-        }
+        rows.push(DialogueRow {
+            shift_group: shift_group.to_string(),
+            shift: shift.to_string(),
+            teacher_name: teacher_name.to_string(),
+            start_date: format_dialogue_datetime(start_date),
+            end_date: format_dialogue_datetime(end_date),
+        });
+    }
+
+    if skipped_missing_columns > 3 {
+        tracing::warn!(
+            "Skipped {} additional dialogue rows in {} due to missing required columns",
+            skipped_missing_columns - 3,
+            file_path
+        );
+    }
+
+    if skipped_invalid_datetime > 3 {
+        tracing::warn!(
+            "Skipped {} additional dialogue rows in {} due to invalid datetimes",
+            skipped_invalid_datetime - 3,
+            file_path
+        );
+    }
+
+    if skipped_outside_process_date > 0 {
+        tracing::info!(
+            "Skipped {} dialogue rows in {} that do not fall on process date {}",
+            skipped_outside_process_date,
+            file_path,
+            process_date.format("%Y-%m-%d")
+        );
     }
 
     tracing::info!(
@@ -1679,6 +1805,73 @@ mod tests {
             record.get(columns.teacher_name).unwrap(),
             "Babalwa Magongo"
         );
+    }
+
+    #[test]
+    fn loads_uk_formatted_dates_on_us_process_date() {
+        let dir = std::env::temp_dir().join(format!(
+            "sergio-ar-dialogue-uk-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("dialogue-2.csv");
+        std::fs::write(
+            &file_path,
+            "Start,Finish,Shift: Shift Number,Resource: Shift Group,Resource: Resource Name,Day of Week\n\
+             1/5/2026 9:00 AM,1/5/2026 11:00 AM,T-5412533,JEN 4 - PM,Babalwa Magongo,Friday\n",
+        )
+        .unwrap();
+
+        let process_date = parse_process_date("2026-05-01").unwrap();
+        let rows = load_dialogue_rows_from_csv(file_path.to_str().unwrap(), process_date)
+            .expect("rows");
+
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].start_date, "2026-05-01 09:00:00");
+    }
+
+    #[test]
+    fn excel_export_requires_preprocess_for_data_rows_even_when_headers_parse() {
+        let contents = r#""Start,""Finish"",""Shift: Shift Number"",""Resource: Shift Group"",""Resource: Resource Name"",""Day of Week"""#
+            .to_string()
+            + "\n"
+            + r#""5/2/2026 9:00 AM,""5/2/2026 11:00 AM"",""T-5412533"",""JEN 4 - PM"",""Babalwa Magongo"",""Saturday"""#;
+
+        let prepared = super::prepare_dialogue_csv_for_parsing(&contents);
+        assert_ne!(
+            prepared, contents,
+            "excel export must be preprocessed before parsing"
+        );
+
+        let process_date_may_1 = parse_process_date("2026-05-01").unwrap();
+        let process_date_may_2 = parse_process_date("2026-05-02").unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "sergio-ar-dialogue-excel-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("dialogue-2.csv");
+        std::fs::write(&file_path, &contents).unwrap();
+
+        let rows_may_1 = load_dialogue_rows_from_csv(
+            file_path.to_str().unwrap(),
+            process_date_may_1,
+        )
+        .expect("rows");
+        let rows_may_2 = load_dialogue_rows_from_csv(
+            file_path.to_str().unwrap(),
+            process_date_may_2,
+        )
+        .expect("rows");
+
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(rows_may_1.len(), 0);
+        assert_eq!(rows_may_2.len(), 1);
+        assert_eq!(rows_may_2[0].shift, "T-5412533");
     }
 
     #[test]
