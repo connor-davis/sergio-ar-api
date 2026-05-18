@@ -12,7 +12,7 @@ use axum::{
     Json,
 };
 use calamine::{open_workbook, Reader, Xlsx};
-use chrono::{Datelike, NaiveDate, NaiveDateTime, TimeZone};
+use chrono::{NaiveDate, NaiveDateTime, TimeZone};
 use chrono_tz::{Africa::Johannesburg, America::New_York, Tz};
 use csv::{ReaderBuilder, StringRecord};
 use serde::{Deserialize, Serialize};
@@ -140,18 +140,15 @@ fn convert_dialogue_local_to_app_timezone(naive: NaiveDateTime) -> NaiveDateTime
     source_dt.with_timezone(&app).naive_local()
 }
 
-fn parse_process_date(process_date: &str) -> Result<NaiveDateTime, Error> {
-    let date = NaiveDate::parse_from_str(process_date, "%Y-%m-%d")?;
-    let midnight = date
-        .and_hms_opt(0, 0, 0)
-        .ok_or_else(|| anyhow::anyhow!("Invalid process date: {}", process_date))?;
-
-    Ok(localize_in_timezone(midnight, app_timezone()))
+fn parse_process_calendar_date(process_date: &str) -> Result<NaiveDate, Error> {
+    NaiveDate::parse_from_str(process_date, "%Y-%m-%d").map_err(Error::from)
 }
 
 const DIALOGUE_DATETIME_FORMATS: &[&str] = &[
+    "%m/%d/%Y %I:%M%p",
     "%m/%d/%Y %I:%M %p",
     "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %I:%M:%S%p",
     "%m/%d/%Y %H:%M",
     "%m/%d/%Y %H:%M:%S",
     "%d/%m/%Y %I:%M %p",
@@ -164,85 +161,106 @@ const DIALOGUE_DATETIME_FORMATS: &[&str] = &[
     "%Y-%m-%d %H:%M",
 ];
 
-fn push_unique_dialogue_datetime(candidates: &mut Vec<NaiveDateTime>, parsed: NaiveDateTime) {
-    let parsed = convert_dialogue_local_to_app_timezone(parsed);
-
+fn push_unique_source_datetime(candidates: &mut Vec<NaiveDateTime>, parsed: NaiveDateTime) {
     if !candidates.iter().any(|existing| *existing == parsed) {
         candidates.push(parsed);
     }
 }
 
-fn dialogue_datetime_candidates(value: &str) -> Vec<NaiveDateTime> {
+/// Wall-clock values as they appear in the US export, before timezone conversion.
+fn collect_source_dialogue_datetimes(value: &str) -> Vec<NaiveDateTime> {
     let value = value.trim().trim_matches('"');
     let mut candidates = Vec::new();
 
     for format in DIALOGUE_DATETIME_FORMATS {
         if let Ok(parsed) = NaiveDateTime::parse_from_str(value, format) {
-            push_unique_dialogue_datetime(&mut candidates, parsed);
+            push_unique_source_datetime(&mut candidates, parsed);
         }
     }
 
     if let Some(parsed) = parse_dialogue_datetime_flexible(value, false) {
-        push_unique_dialogue_datetime(&mut candidates, parsed);
+        push_unique_source_datetime(&mut candidates, parsed);
     }
 
     if let Some(parsed) = parse_dialogue_datetime_flexible(value, true) {
-        push_unique_dialogue_datetime(&mut candidates, parsed);
+        push_unique_source_datetime(&mut candidates, parsed);
     }
 
     candidates
 }
 
+fn dialogue_datetime_matches_process_calendar(
+    source_local: NaiveDateTime,
+    process_calendar: NaiveDate,
+) -> bool {
+    if source_local.date() == process_calendar {
+        return true;
+    }
+
+    convert_dialogue_local_to_app_timezone(source_local).date() == process_calendar
+}
+
 fn parse_dialogue_datetime(value: &str) -> Result<NaiveDateTime, Error> {
-    dialogue_datetime_candidates(value)
+    let source = collect_source_dialogue_datetimes(value)
         .into_iter()
         .next()
-        .ok_or_else(|| anyhow::anyhow!("Unsupported dialogue datetime format: {}", value.trim()))
+        .ok_or_else(|| anyhow::anyhow!("Unsupported dialogue datetime format: {}", value.trim()))?;
+
+    Ok(convert_dialogue_local_to_app_timezone(source))
 }
 
 fn select_dialogue_start_end(
     start: &str,
     finish: &str,
-    process_date: NaiveDateTime,
+    process_calendar: NaiveDate,
 ) -> Option<(NaiveDateTime, NaiveDateTime)> {
-    let starts = dialogue_datetime_candidates(start);
-    let ends = dialogue_datetime_candidates(finish);
+    let starts = collect_source_dialogue_datetimes(start);
+    let ends = collect_source_dialogue_datetimes(finish);
 
     if starts.is_empty() || ends.is_empty() {
         return None;
     }
 
-    let matching_starts = starts
+    let app_ends = ends
         .iter()
-        .filter(|start_date| is_same_day(**start_date, process_date))
-        .copied()
-        .collect::<Vec<_>>();
-    let matching_ends = ends
-        .iter()
-        .filter(|end_date| is_same_day(**end_date, process_date))
-        .copied()
+        .map(|source_end| convert_dialogue_local_to_app_timezone(*source_end))
         .collect::<Vec<_>>();
 
-    if let Some(start_date) = matching_starts.first().copied() {
-        let end_date = ends
+    for source_start in &starts {
+        if !dialogue_datetime_matches_process_calendar(*source_start, process_calendar) {
+            continue;
+        }
+
+        let app_start = convert_dialogue_local_to_app_timezone(*source_start);
+        let app_end = app_ends
             .iter()
             .copied()
-            .filter(|end_date| *end_date >= start_date)
-            .min_by_key(|end_date| *end_date - start_date)
-            .or_else(|| ends.first().copied())?;
+            .filter(|end| *end >= app_start)
+            .min_by_key(|end| *end - app_start)
+            .or_else(|| app_ends.first().copied())?;
 
-        return Some((start_date, end_date));
+        return Some((app_start, app_end));
     }
 
-    if let Some(end_date) = matching_ends.first().copied() {
-        let start_date = starts
+    let app_starts = starts
+        .iter()
+        .map(|source_start| convert_dialogue_local_to_app_timezone(*source_start))
+        .collect::<Vec<_>>();
+
+    for source_end in &ends {
+        if !dialogue_datetime_matches_process_calendar(*source_end, process_calendar) {
+            continue;
+        }
+
+        let app_end = convert_dialogue_local_to_app_timezone(*source_end);
+        let app_start = app_starts
             .iter()
             .copied()
-            .filter(|start_date| *start_date <= end_date)
+            .filter(|start| *start <= app_end)
             .max()
-            .or_else(|| starts.first().copied())?;
+            .or_else(|| app_starts.first().copied())?;
 
-        return Some((start_date, end_date));
+        return Some((app_start, app_end));
     }
 
     None
@@ -323,10 +341,6 @@ fn parse_dialogue_datetime_flexible(value: &str, swap_month_and_day: bool) -> Op
 
 fn format_dialogue_datetime(parsed: NaiveDateTime) -> String {
     parsed.format("%Y-%m-%d %H:%M:%S").to_string()
-}
-
-fn is_same_day(left: NaiveDateTime, right: NaiveDateTime) -> bool {
-    left.day() == right.day() && left.month() == right.month() && left.year() == right.year()
 }
 
 fn parse_invoicing_datetime(value: &str) -> Result<NaiveDateTime, Error> {
@@ -724,7 +738,7 @@ fn first_non_empty_field(record: &StringRecord, indexes: &[usize]) -> String {
 
 fn load_dialogue_rows_from_csv(
     file_path: &str,
-    process_date: NaiveDateTime,
+    process_calendar: NaiveDate,
 ) -> Result<Vec<DialogueRow>, Error> {
     let file_contents = fs::read(file_path)?;
     let file_contents = decode_bytes_to_string(&file_contents);
@@ -750,8 +764,11 @@ fn load_dialogue_rows_from_csv(
     let mut skipped_missing_columns = 0usize;
     let mut skipped_invalid_datetime = 0usize;
     let mut skipped_outside_process_date = 0usize;
+    let mut sample_outside_process_date: Option<(String, String)> = None;
+    let mut total_records = 0usize;
 
     for (index, record) in reader.records().enumerate() {
+        total_records += 1;
         let record = match record {
             Ok(record) => record,
             Err(error) => {
@@ -788,10 +805,11 @@ fn load_dialogue_rows_from_csv(
             continue;
         }
 
-        let Some((start_date, end_date)) = select_dialogue_start_end(start, finish, process_date)
+        let Some((start_date, end_date)) =
+            select_dialogue_start_end(start, finish, process_calendar)
         else {
-            if dialogue_datetime_candidates(start).is_empty()
-                || dialogue_datetime_candidates(finish).is_empty()
+            if collect_source_dialogue_datetimes(start).is_empty()
+                || collect_source_dialogue_datetimes(finish).is_empty()
             {
                 skipped_invalid_datetime += 1;
                 if skipped_invalid_datetime <= 3 {
@@ -805,6 +823,10 @@ fn load_dialogue_rows_from_csv(
                 }
             } else {
                 skipped_outside_process_date += 1;
+                if sample_outside_process_date.is_none() {
+                    sample_outside_process_date =
+                        Some((start.to_string(), finish.to_string()));
+                }
             }
             continue;
         };
@@ -839,7 +861,28 @@ fn load_dialogue_rows_from_csv(
             "Skipped {} dialogue rows in {} that do not fall on process date {}",
             skipped_outside_process_date,
             file_path,
-            process_date.format("%Y-%m-%d")
+            process_calendar.format("%Y-%m-%d")
+        );
+        if let Some((sample_start, sample_finish)) = sample_outside_process_date {
+            tracing::info!(
+                "Example row outside process date in {}: start={:?}, finish={:?} (source tz: {})",
+                file_path,
+                sample_start,
+                sample_finish,
+                source_timezone()
+            );
+        }
+    }
+
+    if rows.is_empty() && total_records > 0 {
+        tracing::warn!(
+            "No dialogue rows loaded from {} for process date {} (records: {}, missing columns: {}, invalid datetimes: {}, outside process date: {})",
+            file_path,
+            process_calendar,
+            total_records,
+            skipped_missing_columns,
+            skipped_invalid_datetime,
+            skipped_outside_process_date
         );
     }
 
@@ -854,7 +897,7 @@ fn load_dialogue_rows_from_csv(
 
 fn load_dialogue_rows_from_xlsx(
     file_path: &str,
-    process_date: NaiveDateTime,
+    process_calendar: NaiveDate,
 ) -> Result<Vec<DialogueRow>, Error> {
     let mut workbook: Xlsx<_> =
         open_workbook(file_path).map_err(|e| anyhow::anyhow!("Cannot open xlsx file: {}", e))?;
@@ -915,19 +958,18 @@ fn load_dialogue_rows_from_xlsx(
             continue;
         }
 
-        let start_date_res = parse_dialogue_datetime(&start_date_temp);
-        let end_date_res = parse_dialogue_datetime(&end_date_temp);
-
-        if let (Ok(start_date), Ok(end_date)) = (start_date_res, end_date_res) {
-            if is_same_day(start_date, process_date) || is_same_day(end_date, process_date) {
-                rows.push(DialogueRow {
-                    shift_group: shift_group_temp.clone(),
-                    shift: shift_temp.clone(),
-                    teacher_name: teacher_name_temp.clone(),
-                    start_date: format_dialogue_datetime(start_date),
-                    end_date: format_dialogue_datetime(end_date),
-                });
-            }
+        if let Some((start_date, end_date)) = select_dialogue_start_end(
+            &start_date_temp,
+            &end_date_temp,
+            process_calendar,
+        ) {
+            rows.push(DialogueRow {
+                shift_group: shift_group_temp.clone(),
+                shift: shift_temp.clone(),
+                teacher_name: teacher_name_temp.clone(),
+                start_date: format_dialogue_datetime(start_date),
+                end_date: format_dialogue_datetime(end_date),
+            });
         }
     }
 
@@ -943,17 +985,17 @@ fn load_dialogue_rows_from_xlsx(
 fn load_dialogue_rows(
     base_path: &str,
     slot: u8,
-    process_date: NaiveDateTime,
+    process_calendar: NaiveDate,
 ) -> Result<Vec<DialogueRow>, Error> {
     let csv_path = format!("{}/dialogue-{}.csv", base_path, slot);
     let xlsx_path = format!("{}/dialogue-{}.xlsx", base_path, slot);
 
     if std::path::Path::new(&csv_path).exists() {
         tracing::info!("📄 Loading dialogue-{} from CSV", slot);
-        load_dialogue_rows_from_csv(&csv_path, process_date)
+        load_dialogue_rows_from_csv(&csv_path, process_calendar)
     } else if std::path::Path::new(&xlsx_path).exists() {
         tracing::info!("📄 Loading dialogue-{} from XLSX", slot);
-        load_dialogue_rows_from_xlsx(&xlsx_path, process_date)
+        load_dialogue_rows_from_xlsx(&xlsx_path, process_calendar)
     } else {
         Err(anyhow::anyhow!(
             "dialogue-{} file not found (tried .csv and .xlsx)",
@@ -1099,10 +1141,11 @@ async fn consolidate_files(
     app_state: AppState,
     process_date: String,
 ) -> Result<impl IntoResponse, Error> {
-    let invoicing_file_path = format!("temp/{}/{}", process_date, "invoicing-report.csv");
-    let dialogue_base_path = format!("temp/{}", process_date);
+    let process_date_input = process_date;
+    let invoicing_file_path = format!("temp/{}/{}", process_date_input, "invoicing-report.csv");
+    let dialogue_base_path = format!("temp/{}", process_date_input);
 
-    let process_date = parse_process_date(&process_date)?;
+    let process_calendar = parse_process_calendar_date(&process_date_input)?;
 
     tracing::info!(
         "🕐 Dialogue files (dialogue-1, dialogue-2): {} → {}",
@@ -1142,12 +1185,12 @@ async fn consolidate_files(
 
     // Consolidate dialogue snapshots (US-local export times → app timezone)
     tracing::info!("❕ Mapping first dialogue file (dialogue-1)...");
-    let first_dialogue_rows = load_dialogue_rows(&dialogue_base_path, 1, process_date)?;
+    let first_dialogue_rows = load_dialogue_rows(&dialogue_base_path, 1, process_calendar)?;
 
     tracing::info!("✅ Successfully mapped first dialogue file.");
 
     tracing::info!("❕ Mapping second dialogue file (dialogue-2)...");
-    let second_dialogue_rows = load_dialogue_rows(&dialogue_base_path, 2, process_date)?;
+    let second_dialogue_rows = load_dialogue_rows(&dialogue_base_path, 2, process_calendar)?;
 
     tracing::info!("✅ Successfully mapped second dialogue file.");
 
@@ -1233,9 +1276,7 @@ async fn consolidate_files(
         let invoicing_row_date = invoicing_row.activity_start;
 
         //  Check that the day, month and year are the same as the process date
-        if invoicing_row_date.day() == process_date.day()
-            && invoicing_row_date.month() == process_date.month()
-            && invoicing_row_date.year() == process_date.year()
+        if invoicing_row_date.date() == process_calendar
         {
             invoicing_rows.push(invoicing_row);
         }
@@ -1617,11 +1658,7 @@ async fn consolidate_files(
         .iter()
         .filter(|row| {
             match parse_dialogue_datetime(&row.start_date) {
-                Ok(row_start_date) => {
-                    row_start_date.day() == process_date.day()
-                        && row_start_date.month() == process_date.month()
-                        && row_start_date.year() == process_date.year()
-                }
+                Ok(row_start_date) => row_start_date.date() == process_calendar,
                 Err(error) => {
                     tracing::warn!(
                         "Skipping consolidated row for teacher {} due to invalid start datetime {:?}: {:?}",
@@ -1769,7 +1806,7 @@ mod tests {
 
     use super::{
         build_dialogue_csv_columns, consolidate_dialogue_rows, load_dialogue_rows_from_csv,
-        normalize_shift_identifier, parse_dialogue_datetime, parse_process_date,
+        normalize_shift_identifier, parse_dialogue_datetime, parse_process_calendar_date,
         preprocess_malformed_csv, DialogueRow,
     };
     use csv::ReaderBuilder;
@@ -1853,18 +1890,18 @@ mod tests {
 
         let rows_may_1 = load_dialogue_rows_from_csv(
             file_path.to_str().unwrap(),
-            parse_process_date("2026-05-01").unwrap(),
+            parse_process_calendar_date("2026-05-01").unwrap(),
         )
         .expect("rows");
         let rows_may_2 = load_dialogue_rows_from_csv(
             file_path.to_str().unwrap(),
-            parse_process_date("2026-05-02").unwrap(),
+            parse_process_calendar_date("2026-05-02").unwrap(),
         )
         .expect("rows");
 
         std::fs::remove_dir_all(&dir).ok();
 
-        assert_eq!(rows_may_1.len(), 0);
+        assert_eq!(rows_may_1.len(), 1);
         assert_eq!(rows_may_2.len(), 1);
     }
 
@@ -1914,8 +1951,8 @@ mod tests {
         )
         .unwrap();
 
-        let process_date = parse_process_date("2026-05-01").unwrap();
-        let rows = load_dialogue_rows_from_csv(file_path.to_str().unwrap(), process_date)
+        let process_calendar = parse_process_calendar_date("2026-05-01").unwrap();
+        let rows = load_dialogue_rows_from_csv(file_path.to_str().unwrap(), process_calendar)
             .expect("rows");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -1937,8 +1974,8 @@ mod tests {
             "excel export must be preprocessed before parsing"
         );
 
-        let process_date_may_1 = parse_process_date("2026-05-01").unwrap();
-        let process_date_may_2 = parse_process_date("2026-05-02").unwrap();
+        let process_calendar_may_1 = parse_process_calendar_date("2026-05-01").unwrap();
+        let process_calendar_may_2 = parse_process_calendar_date("2026-05-02").unwrap();
 
         let dir = std::env::temp_dir().join(format!(
             "sergio-ar-dialogue-excel-test-{}",
@@ -1950,12 +1987,12 @@ mod tests {
 
         let rows_may_1 = load_dialogue_rows_from_csv(
             file_path.to_str().unwrap(),
-            process_date_may_1,
+            process_calendar_may_1,
         )
         .expect("rows");
         let rows_may_2 = load_dialogue_rows_from_csv(
             file_path.to_str().unwrap(),
-            process_date_may_2,
+            process_calendar_may_2,
         )
         .expect("rows");
 
@@ -2025,10 +2062,10 @@ mod tests {
         )
         .unwrap();
 
-        let process_date = parse_process_date("2026-05-02").unwrap();
+        let process_calendar = parse_process_calendar_date("2026-05-02").unwrap();
         let rows = load_dialogue_rows_from_csv(
             file_path.to_str().unwrap(),
-            process_date,
+            process_calendar,
         )
         .expect("rows");
 
